@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { extractImageBlob } from "./image-parser";
 import { generateWithTrellis } from "./trellis";
 import { applyFallbackModel } from "./fallback";
+import { ensureGlbNormals } from "./normals";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +78,11 @@ export async function POST(req: NextRequest) {
       });
       console.log(`[Route: generate-3d] applyFallbackModel() finished using: ${fallbackResult}`);
       generated = true;
+    }
+
+    // Ensure GLB has vertex normals for Android Scene Viewer & Filament AR engine
+    if (generated) {
+      await ensureGlbNormals(destinationPath);
     }
 
     const publicUrl = `/models/${outputFilename}`;

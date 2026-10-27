@@ -77,6 +77,7 @@ export function PromotionsPanel({
       >
         <h3 className="text-sm font-bold text-[#1A1A1A]">New promotion</h3>
         <input
+          aria-label="Promotion name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Lunch special"
@@ -84,6 +85,7 @@ export function PromotionsPanel({
         />
         <div className="grid grid-cols-2 gap-2">
           <select
+            aria-label="Promotion discount type"
             value={type}
             onChange={(e) => setType(e.target.value as "PERCENTAGE" | "FIXED_AMOUNT")}
             className={FORM_INPUT_CLASS}
@@ -92,6 +94,7 @@ export function PromotionsPanel({
             <option value="FIXED_AMOUNT">Fixed amount</option>
           </select>
           <input
+            aria-label="Promotion discount value"
             type="number"
             min="0.01"
             step="0.01"
@@ -100,8 +103,8 @@ export function PromotionsPanel({
             className={FORM_INPUT_CLASS}
           />
         </div>
-        <input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} className={FORM_INPUT_CLASS} />
-        <input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} className={FORM_INPUT_CLASS} />
+        <input aria-label="Promotion start date and time" type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} className={FORM_INPUT_CLASS} />
+        <input aria-label="Promotion end date and time" type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} className={FORM_INPUT_CLASS} />
         <div className="max-h-40 overflow-y-auto flex flex-col gap-1">
           {items.map((item) => (
             <label key={item.id} className="flex items-center gap-2 text-xs text-[#1A1A1A]">
@@ -161,6 +164,8 @@ function PromotionCard({
         type="button"
         disabled={disabled}
         onClick={onDelete}
+        aria-label={`Supprimer la promotion ${promotion.name}`}
+        title="Supprimer la promotion"
         className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center text-red-600"
       >
         <Trash2 className="w-3.5 h-3.5" />

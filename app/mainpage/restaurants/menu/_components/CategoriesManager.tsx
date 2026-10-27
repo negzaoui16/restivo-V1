@@ -56,6 +56,7 @@ export function CategoriesManager({
                 type="button"
                 disabled={disabled || index === 0}
                 onClick={() => handleMove(index, "up")}
+                aria-label={`Monter ${category.name}`}
                 className="w-5 h-5 rounded flex items-center justify-center text-[#736D65] hover:bg-[#F5F0E8] hover:text-[#B55234] disabled:opacity-30 disabled:hover:bg-transparent"
                 title="Monter"
               >
@@ -65,6 +66,7 @@ export function CategoriesManager({
                 type="button"
                 disabled={disabled || index === categories.length - 1}
                 onClick={() => handleMove(index, "down")}
+                aria-label={`Descendre ${category.name}`}
                 className="w-5 h-5 rounded flex items-center justify-center text-[#736D65] hover:bg-[#F5F0E8] hover:text-[#B55234] disabled:opacity-30 disabled:hover:bg-transparent"
                 title="Descendre"
               >
@@ -87,6 +89,7 @@ export function CategoriesManager({
                 onRename(category.id, next.trim());
               }
             }}
+            aria-label={`Modifier ${category.name}`}
             className="w-8 h-8 rounded-lg hover:bg-[#F5F0E8] flex items-center justify-center text-[#736D65] transition-colors"
             title="Modifier"
           >
@@ -104,6 +107,7 @@ export function CategoriesManager({
                 onDelete(category.id);
               }
             }}
+            aria-label={`Supprimer ${category.name}`}
             className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center text-red-600 transition-colors"
             title="Supprimer"
           >

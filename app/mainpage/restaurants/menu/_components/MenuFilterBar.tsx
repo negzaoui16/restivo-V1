@@ -50,9 +50,10 @@ export function MenuFilterBar({
   return (
     <div className="flex flex-wrap items-center gap-2 bg-[#FAF7F2] border border-[#E8E2D7] rounded-xl px-3 py-2.5">
       <div className="relative flex-1 min-w-[140px] max-w-xs">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#A39C91]" />
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#A39C91]" aria-hidden="true" />
         <input
           type="text"
+          aria-label="Rechercher un article du menu"
           placeholder="Search items..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}

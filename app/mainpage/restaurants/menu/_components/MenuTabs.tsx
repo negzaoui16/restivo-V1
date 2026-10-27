@@ -10,11 +10,17 @@ export function MenuTabs({
   onChange: (tab: MenuTab) => void;
 }) {
   return (
-    <div className="flex gap-0 border-b border-[#E8E2D7] mb-3 overflow-x-auto scrollbar-hide">
+    <div
+      role="tablist"
+      aria-label="Sections de gestion du menu"
+      className="flex gap-0 border-b border-[#E8E2D7] mb-3 overflow-x-auto scrollbar-hide"
+    >
       {MENU_TABS.map((tab) => (
         <button
           key={tab}
           type="button"
+          role="tab"
+          aria-selected={activeTab === tab}
           onClick={() => onChange(tab)}
           className={`relative px-4 py-2.5 text-sm font-semibold whitespace-nowrap transition-colors ${
             activeTab === tab ? "text-[#B55234]" : "text-[#736D65] hover:text-[#1A1A1A]"

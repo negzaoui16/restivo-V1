@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -66,9 +66,14 @@ export function RestaurantSidebar() {
   } = useRestaurantManager();
 
   const pathname = usePathname();
+  const [mounted, setMounted] = useState(false);
   const { signOut } = useAuth();
   const router = useRouter();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -279,7 +284,7 @@ export function RestaurantSidebar() {
         <nav className="flex flex-col gap-0.5 mt-1" aria-label="Restaurant Management Navigation">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
-            const isActive = isNavActive(pathname, item, activeNavTab);
+            const isActive = mounted ? isNavActive(pathname, item, activeNavTab) : false;
             const className = `w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13.5px] font-medium transition-all text-left ${
               isActive
                 ? "bg-[#FAF0EA] text-[#B55234] font-bold shadow-2xs"
@@ -308,6 +313,7 @@ export function RestaurantSidebar() {
                     setMobileMenuOpen(false);
                   }}
                   className={className}
+                  suppressHydrationWarning
                 >
                   {content}
                 </Link>
@@ -323,6 +329,7 @@ export function RestaurantSidebar() {
                   setMobileMenuOpen(false);
                 }}
                 className={className}
+                suppressHydrationWarning
               >
                 {content}
               </button>

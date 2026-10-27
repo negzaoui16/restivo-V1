@@ -30,15 +30,18 @@ function FormField({
 function ToggleSwitch({
   checked,
   onChange,
+  label,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
+  label: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       onClick={() => onChange(!checked)}
       className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${
         checked ? "bg-[#B55234]" : "bg-[#D4CFC6]"
@@ -203,7 +206,12 @@ export function AddMenuItemPanel({
   if (!mounted) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 overflow-hidden animate-in fade-in duration-200">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="add-item-modal-title"
+      className="fixed inset-0 z-50 overflow-hidden animate-in fade-in duration-200"
+    >
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/40 backdrop-blur-[2px] transition-opacity"
@@ -216,7 +224,7 @@ export function AddMenuItemPanel({
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-[#E8E2D7] bg-[#FAF7F2]">
             <div>
-              <h3 className="text-base font-bold text-[#1A1A1A]">
+              <h3 id="add-item-modal-title" className="text-base font-bold text-[#1A1A1A]">
                 {editingItem ? "Modifier l'article" : "Ajouter un article"}
               </h3>
               <p className="text-xs text-[#A39C91] mt-0.5">
@@ -226,6 +234,8 @@ export function AddMenuItemPanel({
             <button
               type="button"
               onClick={onClose}
+              aria-label="Fermer"
+              title="Fermer"
               className="w-8 h-8 rounded-lg hover:bg-[#E8E2D7] flex items-center justify-center text-[#736D65] transition-colors"
             >
               <X className="w-5 h-5" />
@@ -238,16 +248,18 @@ export function AddMenuItemPanel({
               <FormField label="Nom du plat" required>
                 <input
                   type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="ex: Pizza Margherita"
-            className={FORM_INPUT_CLASS}
-          />
-        </FormField>
+                  aria-label="Nom du plat"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="ex: Pizza Margherita"
+                  className={FORM_INPUT_CLASS}
+                />
+              </FormField>
 
         <FormField label="Catégorie" required>
           <div className="relative">
             <select
+              aria-label="Catégorie"
               value={categoryId}
               onChange={(e) => setCategoryId(e.target.value)}
               className={`${FORM_INPUT_CLASS} appearance-none pr-8 cursor-pointer`}
@@ -265,6 +277,7 @@ export function AddMenuItemPanel({
 
         <FormField label="Description">
           <textarea
+            aria-label="Description du plat"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Ingrédients, recette et détails..."
@@ -281,6 +294,7 @@ export function AddMenuItemPanel({
                 <button
                   key={tag.id}
                   type="button"
+                  aria-pressed={isSelected}
                   onClick={() => {
                     setSelectedTags((prev) =>
                       isSelected ? prev.filter((t) => t !== tag.id) : [...prev, tag.id]
@@ -304,6 +318,7 @@ export function AddMenuItemPanel({
           <div className="flex flex-col gap-2">
             <input
               type="url"
+              aria-label="URL de la photo du plat"
               value={imageUrl}
               onChange={(e) => setImageUrl(e.target.value)}
               placeholder="https://... ou téléversez un fichier ci-dessous"
@@ -322,6 +337,7 @@ export function AddMenuItemPanel({
                 <input
                   type="file"
                   accept="image/*"
+                  aria-label="Téléverser photo locale"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
@@ -390,6 +406,7 @@ export function AddMenuItemPanel({
               </div>
               <input
                 type="text"
+                aria-label="URL du modèle 3D (.glb)"
                 value={model3dUrl}
                 onChange={(e) => setModel3dUrl(e.target.value)}
                 placeholder="/models/... ou URL .glb"
@@ -403,6 +420,7 @@ export function AddMenuItemPanel({
           <div className="relative">
             <input
               type="number"
+              aria-label="Prix du plat"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
               placeholder="0.00"
@@ -421,12 +439,12 @@ export function AddMenuItemPanel({
             <Check className="w-4 h-4 text-[#A39C91]" />
             <span className="text-sm font-medium text-[#1A1A1A]">Disponible</span>
           </div>
-          <ToggleSwitch checked={isAvailable} onChange={setIsAvailable} />
+          <ToggleSwitch label="Disponible" checked={isAvailable} onChange={setIsAvailable} />
         </div>
 
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-[#1A1A1A]">En vedette (Featured)</span>
-          <ToggleSwitch checked={isFeatured} onChange={setIsFeatured} />
+          <ToggleSwitch label="En vedette (Featured)" checked={isFeatured} onChange={setIsFeatured} />
         </div>
         </div>
           </div>

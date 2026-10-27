@@ -50,17 +50,18 @@ export function MenuSettingsPanel({
       </div>
 
       <div>
-        <label className="text-[11px] font-semibold text-[#A39C91] uppercase tracking-wider mb-1.5 block">
+        <label htmlFor="menu-settings-name" className="text-[11px] font-semibold text-[#A39C91] uppercase tracking-wider mb-1.5 block">
           Nom du Menu
         </label>
-        <input value={name} onChange={(e) => setName(e.target.value)} className={FORM_INPUT_CLASS} />
+        <input id="menu-settings-name" value={name} onChange={(e) => setName(e.target.value)} className={FORM_INPUT_CLASS} />
       </div>
 
       <div>
-        <label className="text-[11px] font-semibold text-[#A39C91] uppercase tracking-wider mb-1.5 block">
+        <label htmlFor="menu-settings-description" className="text-[11px] font-semibold text-[#A39C91] uppercase tracking-wider mb-1.5 block">
           Description ou Message d&apos;accueil
         </label>
         <textarea
+          id="menu-settings-description"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
@@ -82,6 +83,7 @@ export function MenuSettingsPanel({
               <button
                 key={theme.id}
                 type="button"
+                aria-pressed={isSelected}
                 onClick={() => setSelectedThemeId(theme.id)}
                 className={`flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
                   isSelected
@@ -114,6 +116,7 @@ export function MenuSettingsPanel({
         <div className="grid grid-cols-2 gap-3">
           <button
             type="button"
+            aria-pressed={viewMode === "grid"}
             onClick={() => setViewMode("grid")}
             className={`p-3.5 rounded-xl border flex flex-col items-center gap-1.5 text-center transition-all ${
               viewMode === "grid"
@@ -128,6 +131,7 @@ export function MenuSettingsPanel({
 
           <button
             type="button"
+            aria-pressed={viewMode === "list"}
             onClick={() => setViewMode("list")}
             className={`p-3.5 rounded-xl border flex flex-col items-center gap-1.5 text-center transition-all ${
               viewMode === "list"
@@ -144,11 +148,12 @@ export function MenuSettingsPanel({
 
       {/* Banner / Cover URL */}
       <div>
-        <label className="text-[11px] font-semibold text-[#A39C91] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+        <label htmlFor="menu-settings-banner" className="text-[11px] font-semibold text-[#A39C91] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
           <ImageIcon className="w-3.5 h-3.5 text-[#B55234]" />
           <span>Photo de couverture / Bannière du Menu</span>
         </label>
         <input
+          id="menu-settings-banner"
           type="url"
           value={bannerUrl}
           onChange={(e) => setBannerUrl(e.target.value)}

@@ -164,6 +164,7 @@ function MenuItemRow({
           <button
             type="button"
             onClick={onToggleFeatured}
+            aria-label={item.isFeatured ? `Retirer ${item.name} de la sélection Chef` : `Mettre ${item.name} en vedette`}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
               item.isFeatured
                 ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
@@ -177,6 +178,7 @@ function MenuItemRow({
         <button
           type="button"
           onClick={onEdit}
+          aria-label={`Modifier ${item.name}`}
           className="w-7 h-7 rounded-lg hover:bg-[#E8E2D7] flex items-center justify-center text-[#736D65] transition-colors"
           title="Modifier"
         >
@@ -185,6 +187,8 @@ function MenuItemRow({
         <button
           type="button"
           onClick={onToggleAction}
+          aria-label={`Plus d'actions pour ${item.name}`}
+          aria-expanded={isActionOpen}
           className="w-7 h-7 rounded-lg hover:bg-[#E8E2D7] flex items-center justify-center text-[#736D65] transition-colors"
           title="Plus d'actions"
         >

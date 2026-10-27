@@ -26,6 +26,7 @@ const nextConfig: NextConfig = {
     "127.0.0.1:3000",
     "odd-mugs-unite.loca.lt",
     "*.loca.lt",
+    "*.trycloudflare.com",
   ],
   /**
    * These packages use Node.js-native APIs (native addons, pg, crypto) and

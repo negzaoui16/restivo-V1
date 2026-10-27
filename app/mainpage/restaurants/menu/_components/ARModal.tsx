@@ -50,36 +50,44 @@ export function ARModal({
 
   const handleActivateAR = () => {
     const viewer = viewerRef.current as any;
-    if (viewer && viewer.canActivateAR) {
-      try {
-        viewer.activateAR();
-        return;
-      } catch (e) {
-        console.warn("activateAR failed:", e);
-      }
-    }
 
-    // Android Scene Viewer fallback (launch native Google Play Services AR)
     if (typeof window !== "undefined") {
-      const isAndroid = /android/i.test(navigator.userAgent);
+      const ua = navigator.userAgent || "";
+      const isAndroid = /android/i.test(ua);
+      const isIOS = /iPhone|iPad|iPod/i.test(ua);
+
+      // Generate the full absolute HTTPS URL to the 3D .glb model
+      let fullUrl = "";
+      if (modelUrl.includes("/models/")) {
+        const fileName = modelUrl.substring(modelUrl.lastIndexOf("/") + 1);
+        fullUrl = `https://raw.githubusercontent.com/negzaoui16/restivo-V1/Negzaoui/public/models/${fileName}`;
+      } else {
+        fullUrl = new URL(modelUrl, window.location.href).href;
+        if (fullUrl.startsWith("http://")) {
+          fullUrl = fullUrl.replace("http://", "https://");
+        }
+      }
+
       if (isAndroid) {
-        const fullUrl = new URL(modelUrl, window.location.href).href;
+        // Direct launch into Google Scene Viewer with public HTTPS model URL
         const sceneViewerIntent = `intent://arvr.google.com/scene-viewer/1.0?file=${encodeURIComponent(
           fullUrl
         )}&mode=ar_preferred&title=${encodeURIComponent(
           itemName
         )}&resizable=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;end;`;
-        
-        const a = document.createElement("a");
-        a.href = sceneViewerIntent;
-        a.rel = "ar";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+
+        window.location.href = sceneViewerIntent;
         return;
       }
 
-      // iOS Quick Look fallback
+      if (isIOS) {
+        if (viewer && typeof viewer.activateAR === "function") {
+          viewer.activateAR();
+          return;
+        }
+      }
+
+      // Universal fallback via ModelViewer
       if (viewer && typeof viewer.activateAR === "function") {
         viewer.activateAR();
       }
@@ -111,6 +119,8 @@ export function ARModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fermer la vue 3D"
+            title="Fermer"
             className="w-8 h-8 rounded-full bg-white hover:bg-[#E8E2D7] text-[#736D65] flex items-center justify-center transition-colors shadow-sm"
           >
             <X className="w-4 h-4" />
@@ -135,12 +145,18 @@ export function ARModal({
             shadow-softness="0.8"
             touch-action="pan-y"
             ar=""
-            ar-modes="webxr scene-viewer quick-look"
+            ar-modes="scene-viewer webxr quick-look"
+            ar-scale="auto"
             style={{ width: "100%", height: "400px", outline: "none" }}
           >
             {/* Native slot fallback */}
             <button
               slot="ar-button"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleActivateAR();
+              }}
               className="absolute bottom-4 left-1/2 -translate-x-1/2 py-2.5 px-5 rounded-full bg-[#B55234] hover:bg-[#9E4328] text-white text-xs font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95"
             >
               <Smartphone className="w-4 h-4" />

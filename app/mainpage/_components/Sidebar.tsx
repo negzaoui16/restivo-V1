@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -41,9 +41,12 @@ const ROLE_ITEMS = [
   },
 ] as const;
 
-function isActivePath(pathname: string, href: string): boolean {
-  if (href === "/mainpage") return pathname === "/mainpage";
-  return pathname === href || pathname.startsWith(`${href}/`);
+function isActivePath(pathname: string | null, href: string): boolean {
+  if (!pathname) return false;
+  const cleanPath = pathname.replace(/\/+$/, "") || "/";
+  const cleanHref = href.replace(/\/+$/, "") || "/";
+  if (cleanHref === "/mainpage") return cleanPath === "/mainpage";
+  return cleanPath === cleanHref || cleanPath.startsWith(`${cleanHref}/`);
 }
 
 function navLinkClass(isActive: boolean): string {
@@ -68,7 +71,7 @@ function NavLink({
   onNavigate: () => void;
 }) {
   return (
-    <Link href={href} onClick={onNavigate} className={navLinkClass(active)}>
+    <Link href={href} onClick={onNavigate} className={navLinkClass(active)} suppressHydrationWarning>
       <Icon
         className={`w-4 h-4 transition-colors ${active ? "text-[#B55234]" : "text-[#7B756E]"}`}
         strokeWidth={active ? 2.2 : 1.9}
@@ -80,11 +83,19 @@ function NavLink({
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [mounted, setMounted] = useState(false);
   const { mobileMenuOpen, closeMobileMenu } = useMainpage();
   const { user } = useAuth();
-  const visibleRoles = ROLE_ITEMS.filter((item) =>
-    item.id === "owner" ? Boolean(user?.canManageRestaurants) : Boolean(user?.isStaff)
-  );
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const visibleRoles = mounted
+    ? ROLE_ITEMS.filter((item) =>
+        item.id === "owner" ? Boolean(user?.canManageRestaurants) : Boolean(user?.isStaff)
+      )
+    : [];
 
   const content = (
     <div className="h-full flex flex-col justify-between py-6 px-4 md:px-5">
@@ -119,7 +130,7 @@ export function Sidebar() {
               href={item.href}
               label={item.label}
               icon={item.icon}
-              active={isActivePath(pathname, item.href)}
+              active={mounted ? isActivePath(pathname, item.href) : false}
               onNavigate={closeMobileMenu}
             />
           ))}
@@ -132,7 +143,7 @@ export function Sidebar() {
                   href={item.href}
                   label={item.label}
                   icon={item.icon}
-                  active={isActivePath(pathname, item.href)}
+                  active={mounted ? isActivePath(pathname, item.href) : false}
                   onNavigate={closeMobileMenu}
                 />
               ))}

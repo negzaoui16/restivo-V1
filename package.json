@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack",
+    "dev:https": "next dev --webpack --experimental-https --experimental-https-key certificates/server.key --experimental-https-cert certificates/server.crt -H 0.0.0.0 -p 3000",
+    "tunnel": ".\\cloudflared.exe tunnel --url http://localhost:3000",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",

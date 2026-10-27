@@ -93,6 +93,8 @@ export function MenuPreview({
                 <button
                   type="button"
                   onClick={() => setActiveViewMode("grid")}
+                  aria-label="Vue Grille & 3D"
+                  aria-pressed={activeViewMode === "grid"}
                   className={`p-1.5 rounded-full transition-all ${
                     activeViewMode === "grid"
                       ? "bg-[#FAF7F2] text-[#1A1A1A] shadow-xs"
@@ -105,6 +107,8 @@ export function MenuPreview({
                 <button
                   type="button"
                   onClick={() => setActiveViewMode("list")}
+                  aria-label="Vue Liste"
+                  aria-pressed={activeViewMode === "list"}
                   className={`p-1.5 rounded-full transition-all ${
                     activeViewMode === "list"
                       ? "bg-[#FAF7F2] text-[#1A1A1A] shadow-xs"
@@ -119,6 +123,7 @@ export function MenuPreview({
               <button
                 type="button"
                 onClick={onClose}
+                aria-label="Fermer le menu"
                 className="w-8 h-8 rounded-full bg-white/95 border border-[#E8E2D7] text-[#1A1A1A] flex items-center justify-center shadow-md hover:bg-white transition-all hover:scale-105 active:scale-95"
                 title="Fermer"
               >
@@ -135,6 +140,8 @@ export function MenuPreview({
                 <button
                   type="button"
                   onClick={() => setDeviceMode("desktop")}
+                  aria-label="Aperçu Grand Écran"
+                  aria-pressed={deviceMode === "desktop"}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
                     deviceMode === "desktop"
                       ? "bg-white text-[#1A1A1A] shadow-xs"
@@ -148,6 +155,8 @@ export function MenuPreview({
                 <button
                   type="button"
                   onClick={() => setDeviceMode("mobile")}
+                  aria-label="Aperçu Smartphone"
+                  aria-pressed={deviceMode === "mobile"}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
                     deviceMode === "mobile"
                       ? "bg-white text-[#1A1A1A] shadow-xs"
@@ -167,6 +176,8 @@ export function MenuPreview({
                 <button
                   type="button"
                   onClick={() => setActiveViewMode("grid")}
+                  aria-label="Vue Grille & 3D"
+                  aria-pressed={activeViewMode === "grid"}
                   className={`p-1.5 rounded-full transition-all ${
                     activeViewMode === "grid"
                       ? "bg-white text-[#1A1A1A] shadow-xs"
@@ -179,6 +190,8 @@ export function MenuPreview({
                 <button
                   type="button"
                   onClick={() => setActiveViewMode("list")}
+                  aria-label="Vue Liste"
+                  aria-pressed={activeViewMode === "list"}
                   className={`p-1.5 rounded-full transition-all ${
                     activeViewMode === "list"
                       ? "bg-white text-[#1A1A1A] shadow-xs"
@@ -195,6 +208,7 @@ export function MenuPreview({
             <button
               type="button"
               onClick={onClose}
+              aria-label="Fermer l'aperçu du menu"
               className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-white/95 border border-[#E8E2D7] text-xs font-semibold text-[#1A1A1A] shadow-md hover:bg-white transition-all hover:scale-105 active:scale-95"
             >
               <X className="w-4 h-4" />
