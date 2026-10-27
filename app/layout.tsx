@@ -27,6 +27,13 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${plusJakarta.variable} font-sans h-full antialiased`}>
       <body className="min-h-full flex flex-col font-sans bg-[#FAF7F2] text-[#1A1A1A]">
+        {process.env.NODE_ENV === "development" && (
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister()))}`,
+            }}
+          />
+        )}
         <AuthProvider>{children}</AuthProvider>
         <Script
           type="module"

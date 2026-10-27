@@ -24,6 +24,16 @@ export function ARModal({
   const viewerRef = useRef<HTMLElement | null>(null);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
 
+  // Map internal /models/ path to jsDelivr CDN which serves valid model/gltf-binary MIME headers
+  const resolvedModelUrl = React.useMemo(() => {
+    if (!modelUrl) return "";
+    if (modelUrl.includes("/models/")) {
+      const fileName = modelUrl.substring(modelUrl.lastIndexOf("/") + 1);
+      return `https://cdn.jsdelivr.net/gh/negzaoui16/restivo-V1@Negzaoui/public/models/${fileName}`;
+    }
+    return modelUrl;
+  }, [modelUrl]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const ua = navigator.userAgent || "";
@@ -48,48 +58,35 @@ export function ARModal({
     };
   }, [isOpen, onClose]);
 
-  const handleActivateAR = () => {
+  const handleActivateAR = async () => {
     const viewer = viewerRef.current as any;
 
+    // 1. Try native Model-Viewer activation (launches WebXR inside browser camera session)
+    if (viewer && typeof viewer.activateAR === "function") {
+      try {
+        await viewer.activateAR();
+        return;
+      } catch (err) {
+        console.warn("Native activateAR threw, falling back to Intent:", err);
+      }
+    }
+
+    // 2. Android Scene Viewer intent fallback (using jsDelivr CDN URL with model/gltf-binary)
     if (typeof window !== "undefined") {
       const ua = navigator.userAgent || "";
       const isAndroid = /android/i.test(ua);
-      const isIOS = /iPhone|iPad|iPod/i.test(ua);
-
-      // Generate the full absolute HTTPS URL to the 3D .glb model
-      let fullUrl = "";
-      if (modelUrl.includes("/models/")) {
-        const fileName = modelUrl.substring(modelUrl.lastIndexOf("/") + 1);
-        fullUrl = `https://raw.githubusercontent.com/negzaoui16/restivo-V1/Negzaoui/public/models/${fileName}`;
-      } else {
-        fullUrl = new URL(modelUrl, window.location.href).href;
-        if (fullUrl.startsWith("http://")) {
-          fullUrl = fullUrl.replace("http://", "https://");
-        }
-      }
 
       if (isAndroid) {
-        // Direct launch into Google Scene Viewer with public HTTPS model URL
+        const fallbackUrl = window.location.href;
         const sceneViewerIntent = `intent://arvr.google.com/scene-viewer/1.0?file=${encodeURIComponent(
-          fullUrl
+          resolvedModelUrl
         )}&mode=ar_preferred&title=${encodeURIComponent(
           itemName
-        )}&resizable=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;end;`;
+        )}&resizable=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;S.browser_fallback_url=${encodeURIComponent(
+          fallbackUrl
+        )};end;`;
 
         window.location.href = sceneViewerIntent;
-        return;
-      }
-
-      if (isIOS) {
-        if (viewer && typeof viewer.activateAR === "function") {
-          viewer.activateAR();
-          return;
-        }
-      }
-
-      // Universal fallback via ModelViewer
-      if (viewer && typeof viewer.activateAR === "function") {
-        viewer.activateAR();
       }
     }
   };
@@ -131,7 +128,7 @@ export function ARModal({
         <div className="relative flex-1 min-h-[400px] bg-gradient-to-b from-[#FAF7F2] to-[#ECE6DC] flex items-center justify-center p-4">
           <ModelViewer
             ref={viewerRef}
-            src={modelUrl}
+            src={resolvedModelUrl}
             poster={imageUrl ?? undefined}
             alt={`3D model of ${itemName}`}
             auto-rotate=""
@@ -145,7 +142,7 @@ export function ARModal({
             shadow-softness="0.8"
             touch-action="pan-y"
             ar=""
-            ar-modes="scene-viewer webxr quick-look"
+            ar-modes="webxr scene-viewer quick-look"
             ar-scale="auto"
             style={{ width: "100%", height: "400px", outline: "none" }}
           >
