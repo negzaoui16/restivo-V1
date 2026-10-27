@@ -23,6 +23,7 @@ export function ARModal({
 }: ARModalProps) {
   const viewerRef = useRef<HTMLElement | null>(null);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [isAndroidDevice, setIsAndroidDevice] = useState(false);
 
   // Map internal /models/ path to jsDelivr CDN which serves valid model/gltf-binary MIME headers
   const resolvedModelUrl = React.useMemo(() => {
@@ -34,11 +35,19 @@ export function ARModal({
     return modelUrl;
   }, [modelUrl]);
 
+  // Direct, gesture-safe Android Scene Viewer URL without encoding @ (which produces 400 on jsDelivr)
+  const androidSceneViewerUrl = React.useMemo(() => {
+    if (!resolvedModelUrl) return "";
+    return `intent://arvr.google.com/scene-viewer/1.0?file=${resolvedModelUrl}&mode=ar_preferred#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;end;`;
+  }, [resolvedModelUrl]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const ua = navigator.userAgent || "";
+    const isAndroid = /Android/i.test(ua);
     const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    setIsAndroidDevice(isAndroid);
     setIsMobileDevice(isMobileUA || (isTouchDevice && window.innerWidth <= 1024));
   }, []);
 
@@ -58,36 +67,10 @@ export function ARModal({
     };
   }, [isOpen, onClose]);
 
-  const handleActivateAR = async () => {
+  const handleActivateAR = () => {
     const viewer = viewerRef.current as any;
-
-    // 1. Try native Model-Viewer activation (launches WebXR inside browser camera session)
     if (viewer && typeof viewer.activateAR === "function") {
-      try {
-        await viewer.activateAR();
-        return;
-      } catch (err) {
-        console.warn("Native activateAR threw, falling back to Intent:", err);
-      }
-    }
-
-    // 2. Android Scene Viewer intent fallback (using jsDelivr CDN URL with model/gltf-binary)
-    if (typeof window !== "undefined") {
-      const ua = navigator.userAgent || "";
-      const isAndroid = /android/i.test(ua);
-
-      if (isAndroid) {
-        const fallbackUrl = window.location.href;
-        const sceneViewerIntent = `intent://arvr.google.com/scene-viewer/1.0?file=${encodeURIComponent(
-          resolvedModelUrl
-        )}&mode=ar_preferred&title=${encodeURIComponent(
-          itemName
-        )}&resizable=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;S.browser_fallback_url=${encodeURIComponent(
-          fallbackUrl
-        )};end;`;
-
-        window.location.href = sceneViewerIntent;
-      }
+      viewer.activateAR();
     }
   };
 
@@ -146,14 +129,9 @@ export function ARModal({
             ar-scale="auto"
             style={{ width: "100%", height: "400px", outline: "none" }}
           >
-            {/* Native slot fallback */}
+            {/* Native slot button for model-viewer WebXR */}
             <button
               slot="ar-button"
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleActivateAR();
-              }}
               className="absolute bottom-4 left-1/2 -translate-x-1/2 py-2.5 px-5 rounded-full bg-[#B55234] hover:bg-[#9E4328] text-white text-xs font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95"
             >
               <Smartphone className="w-4 h-4" />
@@ -166,14 +144,25 @@ export function ARModal({
         <div className="px-5 py-3.5 bg-white border-t border-[#E8E2D7] flex flex-col gap-2">
           {isMobileDevice ? (
             <>
-              <button
-                type="button"
-                onClick={handleActivateAR}
-                className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
-              >
-                <Camera className="w-4.5 h-4.5" />
-                <span>Voir sur ma table en AR (Ouvrir la caméra)</span>
-              </button>
+              {isAndroidDevice ? (
+                <a
+                  href={androidSceneViewerUrl}
+                  rel="ar"
+                  className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98] text-center"
+                >
+                  <Camera className="w-4.5 h-4.5" />
+                  <span>Voir sur ma table en AR (Ouvrir la caméra)</span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleActivateAR}
+                  className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
+                >
+                  <Camera className="w-4.5 h-4.5" />
+                  <span>Voir sur ma table en AR (Ouvrir la caméra)</span>
+                </button>
+              )}
               <p className="text-[11px] text-[#736D65] text-center leading-relaxed">
                 💡 Tournez le plat à 360° avec le doigt. Cliquez sur le bouton ci-dessus pour lancer la caméra et le poser sur votre table.
               </p>
