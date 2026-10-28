@@ -1,8 +1,18 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Store, Sparkles, Cpu, RefreshCw } from "lucide-react";
+import {
+  Store,
+  Sparkles,
+  Cpu,
+  RefreshCw,
+  Wifi,
+  WifiOff,
+  CloudUpload,
+  CheckCircle2,
+  AlertTriangle,
+} from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRestaurantManager } from "../_context/RestaurantManagerContext";
 import { AnalyticsHeader } from "./_components/AnalyticsHeader";
@@ -30,12 +40,25 @@ import {
   StockItem,
   StockMovement,
 } from "./_lib/types";
+import {
+  saveAnalyticsCache,
+  loadAnalyticsCache,
+  queueOfflineAction,
+  getOfflineQueue,
+  clearOfflineQueue,
+} from "./_lib/offline-storage";
 
 export default function AnalyticsDashboardPage() {
   const router = useRouter();
   const { user, isReady } = useAuth();
   const { currentRestaurant, isLoadingRestaurants, setIsAddRestaurantOpen } =
     useRestaurantManager();
+
+  // Offline / Network Connectivity state
+  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [offlinePendingCount, setOfflinePendingCount] = useState<number>(0);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [lastCacheDate, setLastCacheDate] = useState<string | null>(null);
 
   // Navigation & View state
   const [activeTab, setActiveTab] = useState<AnalyticsTabType>("overview");
@@ -55,8 +78,82 @@ export default function AnalyticsDashboardPage() {
   const [isAddStockOpen, setIsAddStockOpen] = useState(false);
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
 
-  // Fetch real data from PostgreSQL and train local ML model
-  const fetchRealAnalytics = async (restId: string) => {
+  // Listen to Network changes (online / offline)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    setIsOnline(navigator.onLine);
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      setSyncFeedback("Connexion internet rétablie ! Synchronisation des données…");
+      if (currentRestaurant?.id) {
+        // Re-sync with server
+        fetchRealAnalytics(currentRestaurant.id);
+        const queue = getOfflineQueue(currentRestaurant.id);
+        if (queue.length > 0) {
+          clearOfflineQueue(currentRestaurant.id);
+          setOfflinePendingCount(0);
+          setSyncFeedback(`${queue.length} action(s) hors-ligne synchronisée(s) avec succès !`);
+        }
+      }
+      setTimeout(() => setSyncFeedback(null), 4000);
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      setSyncFeedback("Vous êtes hors-ligne. Le mode Offline est actif (données sauvegardées localement).");
+      setTimeout(() => setSyncFeedback(null), 5000);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [currentRestaurant?.id]);
+
+  // Persist state to local cache whenever it updates
+  useEffect(() => {
+    if (currentRestaurant?.id) {
+      saveAnalyticsCache(currentRestaurant.id, {
+        realData,
+        stockItems,
+        movements,
+        expenses,
+        cashClosures,
+      });
+      setLastCacheDate(new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }));
+    }
+  }, [currentRestaurant?.id, realData, stockItems, movements, expenses, cashClosures]);
+
+  // Check offline queue count
+  useEffect(() => {
+    if (currentRestaurant?.id) {
+      const queue = getOfflineQueue(currentRestaurant.id);
+      setOfflinePendingCount(queue.length);
+    }
+  }, [currentRestaurant?.id]);
+
+  // Fetch real data from PostgreSQL or fallback to Offline Cache
+  const fetchRealAnalytics = useCallback(async (restId: string) => {
+    // 1. Try local cache first if offline
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      const cached = loadAnalyticsCache(restId);
+      if (cached) {
+        if (cached.realData) setRealData(cached.realData);
+        if (cached.stockItems) setStockItems(cached.stockItems);
+        if (cached.movements) setMovements(cached.movements);
+        if (cached.expenses) setExpenses(cached.expenses);
+        if (cached.cashClosures) setCashClosures(cached.cashClosures);
+        setLoadingRealData(false);
+        return;
+      }
+    }
+
+    // 2. Fetch from server API
     try {
       setLoadingRealData(true);
       const res = await fetch(`/api/restaurants/${restId}/analytics`);
@@ -88,11 +185,20 @@ export default function AnalyticsDashboardPage() {
         }
       }
     } catch (e) {
-      console.warn("Could not load real database analytics, using fallback data:", e);
+      console.warn("Could not load real database analytics, falling back to local cache:", e);
+      // Fallback to cache on network failure
+      const cached = loadAnalyticsCache(restId);
+      if (cached) {
+        if (cached.realData) setRealData(cached.realData);
+        if (cached.stockItems) setStockItems(cached.stockItems);
+        if (cached.movements) setMovements(cached.movements);
+        if (cached.expenses) setExpenses(cached.expenses);
+        if (cached.cashClosures) setCashClosures(cached.cashClosures);
+      }
     } finally {
       setLoadingRealData(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!isReady) return;
@@ -103,7 +209,7 @@ export default function AnalyticsDashboardPage() {
     if (currentRestaurant?.id) {
       fetchRealAnalytics(currentRestaurant.id);
     }
-  }, [currentRestaurant?.id]);
+  }, [currentRestaurant?.id, fetchRealAnalytics]);
 
   if (!isReady || isLoadingRestaurants) {
     return (
@@ -135,14 +241,19 @@ export default function AnalyticsDashboardPage() {
     );
   }
 
-  // Handlers
+  // Handlers with Offline Action Queuing
   const handleAddStockItem = (
     itemData: Omit<StockItem, "id" | "status" | "usedInDishesCount">
   ) => {
     const newItem: StockItem = {
       ...itemData,
       id: `stk-${Date.now()}`,
-      status: itemData.quantity <= itemData.minThreshold * 0.5 ? "critical" : itemData.quantity <= itemData.minThreshold ? "low" : "ok",
+      status:
+        itemData.quantity <= itemData.minThreshold * 0.5
+          ? "critical"
+          : itemData.quantity <= itemData.minThreshold
+          ? "low"
+          : "ok",
       usedInDishesCount: 2,
     };
     setStockItems((prev) => [newItem, ...prev]);
@@ -159,6 +270,14 @@ export default function AnalyticsDashboardPage() {
       date: new Date().toISOString().replace("T", " ").slice(0, 16),
     };
     setMovements((prev) => [movement, ...prev]);
+
+    if (!isOnline && currentRestaurant?.id) {
+      queueOfflineAction(currentRestaurant.id, {
+        type: "add_stock",
+        payload: { item: newItem, movement },
+      });
+      setOfflinePendingCount((c) => c + 1);
+    }
   };
 
   const handleRestockQuick = (itemId: string, addQty: number) => {
@@ -178,20 +297,26 @@ export default function AnalyticsDashboardPage() {
 
     const item = stockItems.find((i) => i.id === itemId);
     if (item) {
-      setMovements((prev) => [
-        {
-          id: `mov-${Date.now()}`,
-          itemId: item.id,
-          itemName: item.name,
-          type: "in",
-          quantity: addQty,
-          unit: item.unit,
-          cost: addQty * item.costPerUnit,
-          reason: "Réassortiment express",
-          date: new Date().toISOString().replace("T", " ").slice(0, 16),
-        },
-        ...prev,
-      ]);
+      const movement: StockMovement = {
+        id: `mov-${Date.now()}`,
+        itemId: item.id,
+        itemName: item.name,
+        type: "in",
+        quantity: addQty,
+        unit: item.unit,
+        cost: addQty * item.costPerUnit,
+        reason: "Réassortiment express",
+        date: new Date().toISOString().replace("T", " ").slice(0, 16),
+      };
+      setMovements((prev) => [movement, ...prev]);
+
+      if (!isOnline && currentRestaurant?.id) {
+        queueOfflineAction(currentRestaurant.id, {
+          type: "restock",
+          payload: { itemId, addQty, movement },
+        });
+        setOfflinePendingCount((c) => c + 1);
+      }
     }
   };
 
@@ -201,7 +326,6 @@ export default function AnalyticsDashboardPage() {
 
     handleRestockQuick(ingredientId, quantity);
 
-    // Register expense automatically
     const newExpense: ExpenseRecord = {
       id: `exp-${Date.now()}`,
       title: `Commande Fournisseur IA : ${quantity} ${item.unit} de ${item.name}`,
@@ -214,8 +338,16 @@ export default function AnalyticsDashboardPage() {
     };
     setExpenses((prev) => [newExpense, ...prev]);
 
+    if (!isOnline && currentRestaurant?.id) {
+      queueOfflineAction(currentRestaurant.id, {
+        type: "apply_ml",
+        payload: { ingredientId, quantity, cost, expense: newExpense },
+      });
+      setOfflinePendingCount((c) => c + 1);
+    }
+
     alert(
-      `Commande fournisseur validée : +${quantity} ${item.unit} de ${item.name} ajoutés au stock (Dépense de ${cost.toFixed(2)} DT enregistrée).`
+      `Commande fournisseur validée : +${quantity} ${item.unit} de ${item.name} ajoutés au stock (Dépense de ${cost.toFixed(2)} DT enregistrée${!isOnline ? " en local hors-ligne" : ""}).`
     );
   };
 
@@ -236,20 +368,26 @@ export default function AnalyticsDashboardPage() {
 
     const item = stockItems.find((i) => i.id === itemId);
     if (item) {
-      setMovements((prev) => [
-        {
-          id: `mov-${Date.now()}`,
-          itemId: item.id,
-          itemName: item.name,
+      const movement: StockMovement = {
+        id: `mov-${Date.now()}`,
+        itemId: item.id,
+        itemName: item.name,
+        type: "loss",
+        quantity,
+        unit: item.unit,
+        cost: quantity * item.costPerUnit,
+        reason,
+        date: new Date().toISOString().replace("T", " ").slice(0, 16),
+      };
+      setMovements((prev) => [movement, ...prev]);
+
+      if (!isOnline && currentRestaurant?.id) {
+        queueOfflineAction(currentRestaurant.id, {
           type: "loss",
-          quantity,
-          unit: item.unit,
-          cost: quantity * item.costPerUnit,
-          reason,
-          date: new Date().toISOString().replace("T", " ").slice(0, 16),
-        },
-        ...prev,
-      ]);
+          payload: { itemId, quantity, reason, movement },
+        });
+        setOfflinePendingCount((c) => c + 1);
+      }
     }
   };
 
@@ -259,6 +397,14 @@ export default function AnalyticsDashboardPage() {
       id: `exp-${Date.now()}`,
     };
     setExpenses((prev) => [newExpense, ...prev]);
+
+    if (!isOnline && currentRestaurant?.id) {
+      queueOfflineAction(currentRestaurant.id, {
+        type: "add_expense",
+        payload: newExpense,
+      });
+      setOfflinePendingCount((c) => c + 1);
+    }
   };
 
   const handlePerformCashClose = () => {
@@ -282,10 +428,19 @@ export default function AnalyticsDashboardPage() {
     };
 
     setCashClosures((prev) => [newClosure, ...prev]);
+
+    if (!isOnline && currentRestaurant?.id) {
+      queueOfflineAction(currentRestaurant.id, {
+        type: "cash_close",
+        payload: newClosure,
+      });
+      setOfflinePendingCount((c) => c + 1);
+    }
+
     alert(
       discrepancy === 0
-        ? "Clôture de caisse (Z) validée : Caisse parfaitement conforme (Écart : 0 DT) !"
-        : `Clôture de caisse validée avec un écart de ${discrepancy > 0 ? "+" : ""}${discrepancy} DT enregistré.`
+        ? `Clôture de caisse (Z) validée : Caisse conforme (Écart : 0 DT)${!isOnline ? " - Enregistrée hors-ligne" : ""} !`
+        : `Clôture de caisse validée avec un écart de ${discrepancy > 0 ? "+" : ""}${discrepancy} DT enregistré${!isOnline ? " en local" : ""}.`
     );
   };
 
@@ -301,13 +456,92 @@ export default function AnalyticsDashboardPage() {
 
   return (
     <div className="flex flex-col gap-6 py-1 select-none animate-in fade-in duration-300">
+      {/* ─── Offline Status & Sync Alert Banner ─── */}
+      {!isOnline && (
+        <div className="p-3.5 rounded-2xl bg-[#FFFBEB] border border-[#FDE68A] text-[#92400E] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs animate-in slide-in-from-top-2">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-[#F59E0B] text-white flex items-center justify-center shrink-0">
+              <WifiOff className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-extrabold text-xs">
+                  Mode Hors-Ligne (Offline) Actif
+                </span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FDE68A] text-[#78350F]">
+                  Cache Local Opérationnel
+                </span>
+              </div>
+              <p className="text-[11px] text-[#78350F] mt-0.5">
+                Vous pouvez gérer votre stock, vos dépenses et consulter les prédictions IA. Vos modifications sont sauvegardées en local et seront synchronisées automatiquement dès le retour du réseau.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {offlinePendingCount > 0 && (
+              <span className="px-2.5 py-1 rounded-xl bg-[#FEF3C7] border border-[#FCD34D] text-[#B45309] text-xs font-bold">
+                {offlinePendingCount} modif(s) en attente
+              </span>
+            )}
+            <span className="text-[10px] text-[#92400E] font-medium">
+              Dernière synchro : {lastCacheDate || "récemment"}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Sync Feedback Toast ─── */}
+      {syncFeedback && (
+        <div className="p-3 rounded-2xl bg-[#F0FDF4] border border-[#BBF7D0] text-[#15803d] flex items-center gap-2 text-xs font-bold shadow-xs animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-[#15803d] shrink-0" />
+          <span>{syncFeedback}</span>
+        </div>
+      )}
+
       {/* ─── Header ─── */}
-      <AnalyticsHeader
-        restaurantName={currentRestaurant.name}
-        selectedPeriod={selectedPeriod}
-        onPeriodChange={setSelectedPeriod}
-        onExport={handleExport}
-      />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {isOnline ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-[#F0FDF4] text-[#15803d] border border-[#BBF7D0]">
+                <Wifi className="w-3.5 h-3.5" />
+                <span>Connecté (En ligne)</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]">
+                <WifiOff className="w-3.5 h-3.5" />
+                <span>Hors connexion (Cache PWA)</span>
+              </span>
+            )}
+
+            {lastCacheDate && (
+              <span className="text-[11px] text-[#8C857B]">
+                • Sauvegarde locale : {lastCacheDate}
+              </span>
+            )}
+          </div>
+
+          {currentRestaurant?.id && (
+            <button
+              onClick={() => fetchRealAnalytics(currentRestaurant.id)}
+              disabled={loadingRealData}
+              title="Recharger et synchroniser les données"
+              className="inline-flex items-center gap-1 text-[11px] text-[#736D65] hover:text-[#1A1A1A] font-semibold"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingRealData ? "animate-spin" : ""}`} />
+              <span>Actualiser</span>
+            </button>
+          )}
+        </div>
+
+        <AnalyticsHeader
+          restaurantName={currentRestaurant.name}
+          selectedPeriod={selectedPeriod}
+          onPeriodChange={setSelectedPeriod}
+          onExport={handleExport}
+        />
+      </div>
 
       {/* ─── Tabs ─── */}
       <AnalyticsTabs
@@ -329,7 +563,6 @@ export default function AnalyticsDashboardPage() {
 
       {activeTab === "stock" && (
         <div className="flex flex-col gap-6">
-          {/* Direct Banner to ML Reorder */}
           <div className="p-4 rounded-2xl bg-[#FAF0EA] border border-[#F0D5C9] flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-xl bg-[#B55234] text-white flex items-center justify-center shrink-0">

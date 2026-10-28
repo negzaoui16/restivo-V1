@@ -43,7 +43,9 @@ const serwist = new Serwist({
     {
       matcher: ({ request, url }: { request: Request; url: URL }) =>
         request.mode === "navigate" &&
-        (url.pathname === "/homepage" || url.pathname.startsWith("/auth/")),
+        (url.pathname === "/homepage" ||
+          url.pathname.startsWith("/auth/") ||
+          url.pathname.startsWith("/mainpage/restaurants")),
       handler: new StaleWhileRevalidate({
         cacheName: "restivo-pages",
         plugins: [
