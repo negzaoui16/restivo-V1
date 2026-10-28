@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Pin,
   Lock,
-  Unlock,
   Plus,
   Minus,
 } from "lucide-react";
@@ -43,9 +42,10 @@ export function ARModal({
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   // Spatial Anchoring & Table Stabilization states
+  // Initial scale set to realistic plate ratio (0.55 instead of oversized 1.0)
   const [isPinned, setIsPinned] = useState(false);
-  const [scale, setScale] = useState(1);
-  const [pos, setPos] = useState({ x: 0, y: 40 });
+  const [scale, setScale] = useState(0.55);
+  const [pos, setPos] = useState({ x: 0, y: 60 });
   const [gyroOffset, setGyroOffset] = useState({ x: 0, y: 0, rotation: 0 });
 
   const baselineOrientation = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
@@ -70,7 +70,7 @@ export function ARModal({
     setIsMobileDevice(isMobileUA || (isTouchDevice && window.innerWidth <= 1024));
   }, []);
 
-  // Gyroscope Spatial Stabilization (Keeps food anchored on the physical table when camera moves)
+  // Stabilized Sensor Tracking (Filters out magnetic compass jitter and clamps displacement)
   useEffect(() => {
     if (!isCameraActive) {
       baselineOrientation.current = null;
@@ -89,28 +89,28 @@ export function ARModal({
 
       const base = baselineOrientation.current;
 
-      // Delta pitch (tilt up/down)
+      // Delta pitch (tilt up/down) - purely gravitational, rock-solid
       const dBeta = e.beta - base.beta;
 
-      // Delta yaw (turn left/right)
-      let dAlpha = alpha - base.alpha;
-      if (dAlpha > 180) dAlpha -= 360;
-      if (dAlpha < -180) dAlpha += 360;
-
-      // Delta roll
+      // Delta roll (side tilt) - purely gravitational
       const dGamma = e.gamma - base.gamma;
 
-      // Scale factor: pixels displaced per degree of device movement
-      // Moving phone UP makes real table move DOWN in view, so shift model down (+y)
-      // Moving phone LEFT makes real table move RIGHT in view, so shift model right (+x)
-      const pxPerDeg = 7.5;
-      const gx = -dAlpha * pxPerDeg;
-      const gy = dBeta * pxPerDeg;
+      // Delta yaw (panning) - heavily dampened with deadband to eliminate compass noise
+      let dAlpha = alpha - base.alpha;
+      if (dAlpha > 180) dAlpha -= 360;
+      if (dAlpha < -180) dAlpha -= 360;
+      if (Math.abs(dAlpha) < 2.5) dAlpha = 0;
 
+      // Vertical movement reacts to pitch (looking down/up at table)
+      const gy = dBeta * 4.5;
+      // Horizontal movement reacts to gentle yaw & roll
+      const gx = -dAlpha * 3.0 - dGamma * 2.0;
+
+      // Clamped within table range so it NEVER flies off the screen into the floor or couch!
       setGyroOffset({
-        x: Math.max(-280, Math.min(280, gx)),
-        y: Math.max(-320, Math.min(320, gy)),
-        rotation: Math.max(-25, Math.min(25, -dGamma * 0.4)),
+        x: Math.max(-120, Math.min(120, gx)),
+        y: Math.max(-140, Math.min(140, gy)),
+        rotation: Math.max(-15, Math.min(15, -dGamma * 0.25)),
       });
     };
 
@@ -130,8 +130,8 @@ export function ARModal({
     }
     setIsCameraActive(false);
     setIsPinned(false);
-    setPos({ x: 0, y: 40 });
-    setScale(1);
+    setPos({ x: 0, y: 60 });
+    setScale(0.55);
   }, []);
 
   useEffect(() => {
@@ -156,6 +156,14 @@ export function ARModal({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [isOpen, onClose, stopCameraStream]);
+
+  // Trigger true native WebXR AR with floor/table plane detection
+  const handleTriggerNativeAR = () => {
+    const viewer = viewerRef.current as any;
+    if (viewer && typeof viewer.activateAR === "function") {
+      viewer.activateAR();
+    }
+  };
 
   const handleStartLiveCamera = async () => {
     setCameraError(null);
@@ -193,8 +201,8 @@ export function ARModal({
       }
       setIsCameraActive(true);
       setIsPinned(false);
-      setPos({ x: 0, y: 40 });
-      setScale(1);
+      setPos({ x: 0, y: 60 });
+      setScale(0.55);
     } catch (err: any) {
       console.warn("Live camera access failed:", err);
       setCameraError(
@@ -233,7 +241,6 @@ export function ARModal({
 
   const togglePin = () => {
     if (!isPinned) {
-      // Lock current orientation as baseline so model stays right here
       setIsPinned(true);
     } else {
       setIsPinned(false);
@@ -243,8 +250,8 @@ export function ARModal({
   const resetAnchor = () => {
     baselineOrientation.current = null;
     setGyroOffset({ x: 0, y: 0, rotation: 0 });
-    setPos({ x: 0, y: 40 });
-    setScale(1);
+    setPos({ x: 0, y: 60 });
+    setScale(0.55);
     setIsPinned(false);
   };
 
@@ -342,6 +349,10 @@ export function ARModal({
               shadow-intensity={isCameraActive ? "2.2" : "1.2"}
               shadow-softness="0.5"
               touch-action={isCameraActive ? "none" : "pan-y"}
+              ar=""
+              ar-modes="webxr scene-viewer quick-look"
+              ar-placement="floor"
+              ar-scale="auto"
               style={{
                 width: "100%",
                 height: "100%",
@@ -349,7 +360,16 @@ export function ARModal({
                 backgroundColor: "transparent",
                 outline: "none",
               }}
-            />
+            >
+              {/* Native slot for WebXR devices */}
+              <button
+                slot="ar-button"
+                className="absolute top-4 right-4 py-2 px-3.5 rounded-full bg-black/60 hover:bg-black/80 text-white text-[11px] font-semibold backdrop-blur-md shadow-md flex items-center gap-1.5 transition-transform hover:scale-105"
+              >
+                <Smartphone className="w-3.5 h-3.5 text-amber-400" />
+                <span>WebXR AR</span>
+              </button>
+            </ModelViewer>
           </div>
 
           {/* Camera AR HUD Overlay Status */}
@@ -370,7 +390,7 @@ export function ARModal({
                 <span>
                   {isPinned
                     ? "Plat fixé sur la table · Tournez autour"
-                    : "Glissez le plat puis appuyez sur 'Fixer'"}
+                    : "Ajustez la position puis cliquez 'Fixer'"}
                 </span>
               </div>
 
@@ -388,11 +408,11 @@ export function ARModal({
           {/* Floating Scale & Anchor Controls inside Camera View */}
           {isCameraActive && (
             <div className="absolute bottom-3 left-3 right-3 z-30 flex items-center justify-between gap-2 pointer-events-auto">
-              {/* Scale Zoom Buttons */}
+              {/* Scale Zoom Buttons with percentage */}
               <div className="flex items-center bg-black/70 backdrop-blur-md rounded-2xl border border-white/20 p-1 text-white shadow-lg">
                 <button
                   type="button"
-                  onClick={() => setScale((s) => Math.max(0.4, Number((s - 0.15).toFixed(2))))}
+                  onClick={() => setScale((s) => Math.max(0.25, Number((s - 0.08).toFixed(2))))}
                   className="w-8 h-8 rounded-xl hover:bg-white/20 flex items-center justify-center transition-colors active:scale-95"
                   title="Réduire"
                 >
@@ -403,7 +423,7 @@ export function ARModal({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setScale((s) => Math.min(2.5, Number((s + 0.15).toFixed(2))))}
+                  onClick={() => setScale((s) => Math.min(1.8, Number((s + 0.08).toFixed(2))))}
                   className="w-8 h-8 rounded-xl hover:bg-white/20 flex items-center justify-center transition-colors active:scale-95"
                   title="Agrandir"
                 >
@@ -465,20 +485,33 @@ export function ARModal({
                   <span>Quitter le mode caméra</span>
                 </button>
               ) : (
-                <button
-                  type="button"
-                  onClick={handleStartLiveCamera}
-                  className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
-                >
-                  <Camera className="w-4.5 h-4.5" />
-                  <span>Ouvrir la caméra & poser sur ma table (AR)</span>
-                </button>
+                <>
+                  {/* Primary Trigger: True WebXR Plane Tracking */}
+                  <button
+                    type="button"
+                    onClick={handleTriggerNativeAR}
+                    className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
+                  >
+                    <Sparkles className="w-4.5 h-4.5 text-amber-300" />
+                    <span>Poser sur ma table (Vrai AR · Détection de table)</span>
+                  </button>
+
+                  {/* Secondary Trigger: Live Stabilized Camera View */}
+                  <button
+                    type="button"
+                    onClick={handleStartLiveCamera}
+                    className="w-full py-2.5 px-4 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors text-center"
+                  >
+                    <Camera className="w-4 h-4 text-[#B55234]" />
+                    <span>Ou ouvrir en Mode Caméra Directe</span>
+                  </button>
+                </>
               )}
 
               <p className="text-[11px] text-[#736D65] text-center leading-relaxed">
                 {isCameraActive
                   ? "💡 Déplacez le plat avec le doigt, ajustez la taille, puis cliquez sur 'Fixer sur ma table' pour l'ancrer."
-                  : "💡 Lancez la caméra pour projeter ce plat directement devant vous avec ancrage sur votre table."}
+                  : "💡 Utilisez 'Poser sur ma table' pour scanner votre table et y déposer le plat."}
               </p>
             </div>
           ) : (
