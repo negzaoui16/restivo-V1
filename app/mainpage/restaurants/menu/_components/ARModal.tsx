@@ -75,7 +75,10 @@ export function ARModal({
     if (!resolvedModelUrl) return "";
     const file = encodeURIComponent(resolvedModelUrl);
     const title = encodeURIComponent(itemName || "Plat Restivo");
-    return `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_preferred&title=${title}&resizable=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;end;`;
+    const fallback = encodeURIComponent(
+      typeof window !== "undefined" ? window.location.href : ""
+    );
+    return `intent://arvr.google.com/scene-viewer/1.2?file=${file}&mode=ar_preferred&title=${title}&resizable=true&disable_occlusion=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;S.browser_fallback_url=${fallback};end;`;
   }, [resolvedModelUrl, itemName]);
 
   useEffect(() => {
