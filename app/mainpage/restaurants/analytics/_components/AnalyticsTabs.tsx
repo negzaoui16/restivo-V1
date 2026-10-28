@@ -7,6 +7,7 @@ import {
   Receipt,
   Sparkles,
   AlertCircle,
+  Cpu,
 } from "lucide-react";
 import { AnalyticsTabType } from "../_lib/types";
 
@@ -30,7 +31,7 @@ export function AnalyticsTabs({
     },
     {
       id: "stock" as AnalyticsTabType,
-      label: "Gestion de Stock & Ingrédients",
+      label: "Gestion de Stock",
       icon: Boxes,
       badge:
         criticalStockCount > 0 ? (
@@ -39,6 +40,17 @@ export function AnalyticsTabs({
             {criticalStockCount} alertes
           </span>
         ) : null,
+    },
+    {
+      id: "ml_ai" as AnalyticsTabType,
+      label: "IA Prédictive & Achats (ML)",
+      icon: Cpu,
+      badge: (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-[#FAF0EA] text-[#B55234] border border-[#F0D5C9]">
+          <Sparkles className="w-2.5 h-2.5" />
+          Régression
+        </span>
+      ),
     },
     {
       id: "accounting" as AnalyticsTabType,

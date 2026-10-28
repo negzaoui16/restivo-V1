@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Store } from "lucide-react";
+import { Store, Sparkles, Cpu, RefreshCw } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRestaurantManager } from "../_context/RestaurantManagerContext";
 import { AnalyticsHeader } from "./_components/AnalyticsHeader";
@@ -11,6 +11,7 @@ import { OverviewTab } from "./_components/OverviewTab";
 import { StockManagementTab } from "./_components/StockManagementTab";
 import { AccountingRevenueTab } from "./_components/AccountingRevenueTab";
 import { MenuEngineeringTab } from "./_components/MenuEngineeringTab";
+import { MLPredictorCard } from "./_components/MLPredictorCard";
 import { AddStockModal } from "./_components/AddStockModal";
 import { AddExpenseModal } from "./_components/AddExpenseModal";
 import {
@@ -24,6 +25,8 @@ import {
   AnalyticsTabType,
   DailyCashClosure,
   ExpenseRecord,
+  MLPredictionResult,
+  RealAnalyticsApiResponse,
   StockItem,
   StockMovement,
 } from "./_lib/types";
@@ -38,7 +41,11 @@ export default function AnalyticsDashboardPage() {
   const [activeTab, setActiveTab] = useState<AnalyticsTabType>("overview");
   const [selectedPeriod, setSelectedPeriod] = useState<AnalyticsPeriod>("month");
 
-  // Live state
+  // Real Database state
+  const [realData, setRealData] = useState<RealAnalyticsApiResponse | null>(null);
+  const [loadingRealData, setLoadingRealData] = useState<boolean>(true);
+
+  // Live client state
   const [stockItems, setStockItems] = useState<StockItem[]>(INITIAL_STOCK_ITEMS);
   const [movements, setMovements] = useState<StockMovement[]>(INITIAL_MOVEMENTS);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>(INITIAL_EXPENSES);
@@ -48,10 +55,55 @@ export default function AnalyticsDashboardPage() {
   const [isAddStockOpen, setIsAddStockOpen] = useState(false);
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
 
+  // Fetch real data from PostgreSQL and train local ML model
+  const fetchRealAnalytics = async (restId: string) => {
+    try {
+      setLoadingRealData(true);
+      const res = await fetch(`/api/restaurants/${restId}/analytics`);
+      const json = await res.json();
+      if (json.ok && json.data) {
+        setRealData(json.data);
+
+        // Sync stock items with ML predictions if available
+        if (json.data.mlPredictions && json.data.mlPredictions.length > 0) {
+          setStockItems((prev) =>
+            prev.map((item) => {
+              const pred = json.data.mlPredictions.find(
+                (p: MLPredictionResult) => p.ingredientId === item.id
+              );
+              if (pred) {
+                return {
+                  ...item,
+                  status:
+                    pred.urgency === "critique"
+                      ? "critical"
+                      : pred.urgency === "eleve"
+                      ? "low"
+                      : "ok",
+                };
+              }
+              return item;
+            })
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("Could not load real database analytics, using fallback data:", e);
+    } finally {
+      setLoadingRealData(false);
+    }
+  };
+
   useEffect(() => {
     if (!isReady) return;
     if (!user?.canManageRestaurants) router.replace("/mainpage");
   }, [isReady, user?.canManageRestaurants, router]);
+
+  useEffect(() => {
+    if (currentRestaurant?.id) {
+      fetchRealAnalytics(currentRestaurant.id);
+    }
+  }, [currentRestaurant?.id]);
 
   if (!isReady || isLoadingRestaurants) {
     return (
@@ -95,7 +147,6 @@ export default function AnalyticsDashboardPage() {
     };
     setStockItems((prev) => [newItem, ...prev]);
 
-    // Add movement
     const movement: StockMovement = {
       id: `mov-${Date.now()}`,
       itemId: newItem.id,
@@ -142,6 +193,30 @@ export default function AnalyticsDashboardPage() {
         ...prev,
       ]);
     }
+  };
+
+  const handleApplyMLReorder = (ingredientId: string, quantity: number, cost: number) => {
+    const item = stockItems.find((i) => i.id === ingredientId);
+    if (!item) return;
+
+    handleRestockQuick(ingredientId, quantity);
+
+    // Register expense automatically
+    const newExpense: ExpenseRecord = {
+      id: `exp-${Date.now()}`,
+      title: `Commande Fournisseur IA : ${quantity} ${item.unit} de ${item.name}`,
+      category: "fournisseurs",
+      amount: cost,
+      date: new Date().toISOString().split("T")[0],
+      paymentMethod: "virement",
+      status: "paye",
+      notes: "Généré automatiquement par le modèle IA Régression Linéaire Multiple",
+    };
+    setExpenses((prev) => [newExpense, ...prev]);
+
+    alert(
+      `Commande fournisseur validée : +${quantity} ${item.unit} de ${item.name} ajoutés au stock (Dépense de ${cost.toFixed(2)} DT enregistrée).`
+    );
   };
 
   const handleDeclareLoss = (itemId: string, quantity: number, reason: string) => {
@@ -222,6 +297,8 @@ export default function AnalyticsDashboardPage() {
     (i) => i.status === "critical" || i.status === "low"
   ).length;
 
+  const currentPredictions = realData?.mlPredictions || [];
+
   return (
     <div className="flex flex-col gap-6 py-1 select-none animate-in fade-in duration-300">
       {/* ─── Header ─── */}
@@ -243,18 +320,52 @@ export default function AnalyticsDashboardPage() {
       {activeTab === "overview" && (
         <OverviewTab
           stockItems={stockItems}
+          realData={realData}
           onGoToStock={() => setActiveTab("stock")}
           onGoToAccounting={() => setActiveTab("accounting")}
+          onGoToML={() => setActiveTab("ml_ai")}
         />
       )}
 
       {activeTab === "stock" && (
-        <StockManagementTab
-          stockItems={stockItems}
-          movements={movements}
-          onOpenAddModal={() => setIsAddStockOpen(true)}
-          onDeclareLoss={handleDeclareLoss}
-          onRestockItem={handleRestockQuick}
+        <div className="flex flex-col gap-6">
+          {/* Direct Banner to ML Reorder */}
+          <div className="p-4 rounded-2xl bg-[#FAF0EA] border border-[#F0D5C9] flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-[#B55234] text-white flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-[#1A1A1A]">
+                  Suggestions de Réapprovisionnement IA Disponibles
+                </span>
+                <p className="text-[11px] text-[#736D65]">
+                  Le modèle de Régression Linéaire Multiple a calculé les besoins exacts pour les 3 prochains jours.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setActiveTab("ml_ai")}
+              className="px-3.5 py-1.5 rounded-xl bg-[#B55234] text-white font-bold text-xs hover:bg-[#9E4328] transition-colors"
+            >
+              Consulter l&apos;IA Prédictive →
+            </button>
+          </div>
+
+          <StockManagementTab
+            stockItems={stockItems}
+            movements={movements}
+            onOpenAddModal={() => setIsAddStockOpen(true)}
+            onDeclareLoss={handleDeclareLoss}
+            onRestockItem={handleRestockQuick}
+          />
+        </div>
+      )}
+
+      {activeTab === "ml_ai" && (
+        <MLPredictorCard
+          predictions={currentPredictions}
+          onApplyReorder={handleApplyMLReorder}
         />
       )}
 
