@@ -41,6 +41,11 @@ export function ARModal({
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
+  // AR diagnostics: shows the real reason when native AR cannot start
+  const [arDiag, setArDiag] = useState<string | null>(null);
+  const [useSampleModel, setUseSampleModel] = useState(false);
+  const arStartedRef = useRef(false);
+
   // Spatial Anchoring & Table Stabilization states
   // Initial scale set to realistic plate ratio (0.55 instead of oversized 1.0)
   const [isPinned, setIsPinned] = useState(false);
@@ -54,13 +59,15 @@ export function ARModal({
 
   // Map internal /models/ path to jsDelivr CDN which serves valid model/gltf-binary MIME headers
   const resolvedModelUrl = React.useMemo(() => {
+    // Isolation test: standard Google sample model to tell "phone/config problem" from "our model problem"
+    if (useSampleModel) return "https://modelviewer.dev/shared-assets/models/Astronaut.glb";
     if (!modelUrl) return "";
     if (modelUrl.includes("/models/")) {
       const fileName = modelUrl.substring(modelUrl.lastIndexOf("/") + 1);
       return `https://cdn.jsdelivr.net/gh/negzaoui16/restivo-V1@Negzaoui/public/models/${fileName}`;
     }
     return modelUrl;
-  }, [modelUrl]);
+  }, [modelUrl, useSampleModel]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -77,6 +84,9 @@ export function ARModal({
       setGyroOffset({ x: 0, y: 0, rotation: 0 });
       return;
     }
+
+    // Once pinned, the sensors no longer move the dish (offset was baked into pos)
+    if (isPinned) return;
 
     const handleOrientation = (e: DeviceOrientationEvent) => {
       if (e.beta == null || e.gamma == null) return;
@@ -118,7 +128,7 @@ export function ARModal({
     return () => {
       window.removeEventListener("deviceorientation", handleOrientation, true);
     };
-  }, [isCameraActive]);
+  }, [isCameraActive, isPinned]);
 
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
@@ -158,12 +168,76 @@ export function ARModal({
   }, [isOpen, onClose, stopCameraStream]);
 
   // Trigger true native WebXR AR with floor/table plane detection
-  const handleTriggerNativeAR = () => {
+  const handleTriggerNativeAR = async () => {
     const viewer = viewerRef.current as any;
-    if (viewer && typeof viewer.activateAR === "function") {
-      viewer.activateAR();
+    setArDiag(null);
+    setCameraError(null);
+    arStartedRef.current = false;
+
+    if (!viewer || typeof viewer.activateAR !== "function") {
+      setArDiag("AR indisponible : le viewer 3D n'est pas prêt. Ouverture du mode caméra…");
+      handleStartLiveCamera();
+      return;
     }
+
+    if (!viewer.loaded) {
+      setArDiag("Le modèle 3D est encore en chargement ou a échoué à charger. Réessayez dans quelques secondes.");
+      return;
+    }
+
+    if (!viewer.canActivateAR) {
+      setArDiag(
+        "Ce navigateur/téléphone n'expose aucun mode AR (WebXR / Scene Viewer). Ouverture du mode caméra…"
+      );
+      handleStartLiveCamera();
+      return;
+    }
+
+    try {
+      await viewer.activateAR();
+    } catch (err: any) {
+      setArDiag(`Échec du lancement AR : ${err?.message || "erreur inconnue"}. Ouverture du mode caméra…`);
+      handleStartLiveCamera();
+      return;
+    }
+
+    // Safety net: if nothing happened (silent failure), fall back to camera mode
+    window.setTimeout(() => {
+      if (!arStartedRef.current && document.visibilityState === "visible") {
+        setArDiag("L'AR native n'a pas démarré sur cet appareil. Ouverture du mode caméra…");
+        handleStartLiveCamera();
+      }
+    }, 3500);
   };
+
+  // Listen to model-viewer events to understand why AR works or fails
+  useEffect(() => {
+    if (!isOpen) return;
+    const viewer = viewerRef.current as any;
+    if (!viewer) return;
+
+    const onArStatus = (e: any) => {
+      const status = e?.detail?.status;
+      if (status === "session-started" || status === "object-placed") {
+        arStartedRef.current = true;
+        setArDiag(null);
+      }
+      if (status === "failed") {
+        setArDiag("Le système AR a signalé un échec (ARCore / Scene Viewer). Utilisez le mode caméra.");
+      }
+    };
+    const onError = (e: any) => {
+      const msg = e?.detail?.sourceError?.message || e?.detail?.type || "erreur inconnue";
+      setArDiag(`Erreur de chargement du modèle 3D : ${msg}`);
+    };
+
+    viewer.addEventListener("ar-status", onArStatus);
+    viewer.addEventListener("error", onError);
+    return () => {
+      viewer.removeEventListener("ar-status", onArStatus);
+      viewer.removeEventListener("error", onError);
+    };
+  }, [isOpen, resolvedModelUrl]);
 
   const handleStartLiveCamera = async () => {
     setCameraError(null);
@@ -199,6 +273,8 @@ export function ARModal({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      setCameraError(null);
+      setArDiag(null);
       setIsCameraActive(true);
       setIsPinned(false);
       setPos({ x: 0, y: 60 });
@@ -241,8 +317,12 @@ export function ARModal({
 
   const togglePin = () => {
     if (!isPinned) {
+      // Bake the current sensor offset into the position so the dish stays exactly where it is
+      setPos((p) => ({ x: p.x + gyroOffset.x, y: p.y + gyroOffset.y }));
+      setGyroOffset((g) => ({ x: 0, y: 0, rotation: g.rotation }));
       setIsPinned(true);
     } else {
+      baselineOrientation.current = null;
       setIsPinned(false);
     }
   };
@@ -350,7 +430,7 @@ export function ARModal({
               shadow-softness="0.5"
               touch-action={isCameraActive ? "none" : "pan-y"}
               ar=""
-              ar-modes="webxr scene-viewer quick-look"
+              ar-modes="scene-viewer webxr quick-look"
               ar-placement="floor"
               ar-scale="auto"
               style={{
@@ -506,6 +586,29 @@ export function ARModal({
                     <span>Ou ouvrir en Mode Caméra Directe</span>
                   </button>
                 </>
+              )}
+
+              {/* AR diagnostic: real reason when native AR fails */}
+              {arDiag && !isCameraActive && (
+                <div className="px-3 py-2 rounded-xl bg-red-50 border border-red-200 text-red-800 text-[11px] leading-snug">
+                  ⚠️ {arDiag}
+                </div>
+              )}
+
+              {/* Isolation test: standard Google model vs our own model */}
+              {!isCameraActive && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setArDiag(null);
+                    setUseSampleModel((v) => !v);
+                  }}
+                  className="text-[11px] text-[#8A847C] underline underline-offset-2 text-center"
+                >
+                  {useSampleModel
+                    ? "Revenir au modèle du plat"
+                    : "🔧 Test : essayer l'AR avec un modèle standard (astronaute)"}
+                </button>
               )}
 
               <p className="text-[11px] text-[#736D65] text-center leading-relaxed">
