@@ -38,6 +38,7 @@ export function ARModal({
   const streamRef = useRef<MediaStream | null>(null);
 
   const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [isAndroidDevice, setIsAndroidDevice] = useState(false);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
@@ -69,11 +70,21 @@ export function ARModal({
     return modelUrl;
   }, [modelUrl, useSampleModel]);
 
+  // Direct, high-priority Google Scene Viewer intent for Android ARCore devices
+  const androidSceneViewerUrl = React.useMemo(() => {
+    if (!resolvedModelUrl) return "";
+    const file = encodeURIComponent(resolvedModelUrl);
+    const title = encodeURIComponent(itemName || "Plat Restivo");
+    return `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_preferred&title=${title}&resizable=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;end;`;
+  }, [resolvedModelUrl, itemName]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const ua = navigator.userAgent || "";
+    const isAndroid = /Android/i.test(ua);
     const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    setIsAndroidDevice(isAndroid);
     setIsMobileDevice(isMobileUA || (isTouchDevice && window.innerWidth <= 1024));
   }, []);
 
@@ -167,47 +178,34 @@ export function ARModal({
     };
   }, [isOpen, onClose, stopCameraStream]);
 
-  // Trigger true native WebXR AR with floor/table plane detection
+  // Trigger true native AR (Scene Viewer on Android, WebXR/Quick-Look otherwise)
   const handleTriggerNativeAR = async () => {
-    const viewer = viewerRef.current as any;
     setArDiag(null);
     setCameraError(null);
     arStartedRef.current = false;
 
-    if (!viewer || typeof viewer.activateAR !== "function") {
-      setArDiag("AR indisponible : le viewer 3D n'est pas prêt. Ouverture du mode caméra…");
-      handleStartLiveCamera();
+    // 1. Priority for Android: Launch Google Scene Viewer Intent directly
+    const isAndroid =
+      isAndroidDevice ||
+      (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent));
+    if (isAndroid && androidSceneViewerUrl) {
+      window.location.href = androidSceneViewerUrl;
       return;
     }
 
-    if (!viewer.loaded) {
-      setArDiag("Le modèle 3D est encore en chargement ou a échoué à charger. Réessayez dans quelques secondes.");
-      return;
-    }
-
-    if (!viewer.canActivateAR) {
-      setArDiag(
-        "Ce navigateur/téléphone n'expose aucun mode AR (WebXR / Scene Viewer). Ouverture du mode caméra…"
-      );
-      handleStartLiveCamera();
-      return;
-    }
-
-    try {
-      await viewer.activateAR();
-    } catch (err: any) {
-      setArDiag(`Échec du lancement AR : ${err?.message || "erreur inconnue"}. Ouverture du mode caméra…`);
-      handleStartLiveCamera();
-      return;
-    }
-
-    // Safety net: if nothing happened (silent failure), fall back to camera mode
-    window.setTimeout(() => {
-      if (!arStartedRef.current && document.visibilityState === "visible") {
-        setArDiag("L'AR native n'a pas démarré sur cet appareil. Ouverture du mode caméra…");
-        handleStartLiveCamera();
+    // 2. WebXR / iOS Quick Look devices via model-viewer
+    const viewer = viewerRef.current as any;
+    if (viewer && typeof viewer.activateAR === "function") {
+      try {
+        await viewer.activateAR();
+        return;
+      } catch (err: any) {
+        console.warn("Native activateAR threw:", err);
       }
-    }, 3500);
+    }
+
+    // Fallback: If native AR cannot be started, open direct camera mode
+    handleStartLiveCamera();
   };
 
   // Listen to model-viewer events to understand why AR works or fails
@@ -420,8 +418,8 @@ export function ARModal({
               src={resolvedModelUrl}
               poster={imageUrl ?? undefined}
               alt={`3D model of ${itemName}`}
-              auto-rotate={!isCameraActive ? "" : undefined}
-              camera-controls=""
+              auto-rotate={!isCameraActive ? true : undefined}
+              camera-controls={true}
               bounds="tight"
               min-camera-orbit="auto 0deg auto"
               max-camera-orbit="auto 88deg auto"
@@ -429,7 +427,7 @@ export function ARModal({
               shadow-intensity={isCameraActive ? "2.2" : "1.2"}
               shadow-softness="0.5"
               touch-action={isCameraActive ? "none" : "pan-y"}
-              ar=""
+              ar={true}
               ar-modes="scene-viewer webxr quick-look"
               ar-placement="floor"
               ar-scale="auto"
@@ -566,15 +564,26 @@ export function ARModal({
                 </button>
               ) : (
                 <>
-                  {/* Primary Trigger: True WebXR Plane Tracking */}
-                  <button
-                    type="button"
-                    onClick={handleTriggerNativeAR}
-                    className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
-                  >
-                    <Sparkles className="w-4.5 h-4.5 text-amber-300" />
-                    <span>Poser sur ma table (Vrai AR · Détection de table)</span>
-                  </button>
+                  {/* Primary Trigger: True AR Plane & Table Tracking */}
+                  {isAndroidDevice ? (
+                    <a
+                      href={androidSceneViewerUrl}
+                      rel="ar"
+                      className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98] text-center"
+                    >
+                      <Sparkles className="w-4.5 h-4.5 text-amber-300" />
+                      <span>Poser sur ma table (Vrai AR · Détection de table)</span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleTriggerNativeAR}
+                      className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
+                    >
+                      <Sparkles className="w-4.5 h-4.5 text-amber-300" />
+                      <span>Poser sur ma table (Vrai AR · Détection de table)</span>
+                    </button>
+                  )}
 
                   {/* Secondary Trigger: Live Stabilized Camera View */}
                   <button
