@@ -35,7 +35,7 @@ const NAV_ITEMS = [
   { id: "menu", label: "Menu", icon: BookOpen, href: `${RESTAURANTS_ROOT}/menu` },
   { id: "tables", label: "Tables", icon: Armchair, href: `${RESTAURANTS_ROOT}/tables` },
   { id: "staff", label: "Staff", icon: Users2, href: `${RESTAURANTS_ROOT}/staff` },
-  { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "analytics", label: "Analytics", icon: BarChart3, href: `${RESTAURANTS_ROOT}/analytics` },
   { id: "reviews", label: "Reviews", icon: Star },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
