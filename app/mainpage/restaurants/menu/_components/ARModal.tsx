@@ -91,58 +91,10 @@ export function ARModal({
     setIsMobileDevice(isMobileUA || (isTouchDevice && window.innerWidth <= 1024));
   }, []);
 
-  // Stabilized Sensor Tracking (Filters out magnetic compass jitter and clamps displacement)
+  // Rock-solid table placement in camera mode without gyro shaking or floating
   useEffect(() => {
-    if (!isCameraActive) {
-      baselineOrientation.current = null;
-      setGyroOffset({ x: 0, y: 0, rotation: 0 });
-      return;
-    }
-
-    // Once pinned, the sensors no longer move the dish (offset was baked into pos)
-    if (isPinned) return;
-
-    const handleOrientation = (e: DeviceOrientationEvent) => {
-      if (e.beta == null || e.gamma == null) return;
-      const alpha = e.alpha ?? 0;
-
-      if (!baselineOrientation.current) {
-        baselineOrientation.current = { alpha, beta: e.beta, gamma: e.gamma };
-        return;
-      }
-
-      const base = baselineOrientation.current;
-
-      // Delta pitch (tilt up/down) - purely gravitational, rock-solid
-      const dBeta = e.beta - base.beta;
-
-      // Delta roll (side tilt) - purely gravitational
-      const dGamma = e.gamma - base.gamma;
-
-      // Delta yaw (panning) - heavily dampened with deadband to eliminate compass noise
-      let dAlpha = alpha - base.alpha;
-      if (dAlpha > 180) dAlpha -= 360;
-      if (dAlpha < -180) dAlpha -= 360;
-      if (Math.abs(dAlpha) < 2.5) dAlpha = 0;
-
-      // Vertical movement reacts to pitch (looking down/up at table)
-      const gy = dBeta * 4.5;
-      // Horizontal movement reacts to gentle yaw & roll
-      const gx = -dAlpha * 3.0 - dGamma * 2.0;
-
-      // Clamped within table range so it NEVER flies off the screen into the floor or couch!
-      setGyroOffset({
-        x: Math.max(-120, Math.min(120, gx)),
-        y: Math.max(-140, Math.min(140, gy)),
-        rotation: Math.max(-15, Math.min(15, -dGamma * 0.25)),
-      });
-    };
-
-    window.addEventListener("deviceorientation", handleOrientation, true);
-    return () => {
-      window.removeEventListener("deviceorientation", handleOrientation, true);
-    };
-  }, [isCameraActive, isPinned]);
+    setGyroOffset({ x: 0, y: 0, rotation: 0 });
+  }, [isCameraActive]);
 
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
@@ -181,13 +133,24 @@ export function ARModal({
     };
   }, [isOpen, onClose, stopCameraStream]);
 
-  // Trigger true native AR (Scene Viewer on Android, WebXR/Quick-Look otherwise)
+  // Trigger true native AR (WebXR directly inside Chrome, or Google Scene Viewer)
   const handleTriggerNativeAR = async () => {
     setArDiag(null);
     setCameraError(null);
     arStartedRef.current = false;
 
-    // 1. Priority for Android: Launch Google Scene Viewer Intent directly
+    // 1. Priority: Try WebXR directly inside Chrome (uses ARCore without launching Google App)
+    const viewer = viewerRef.current as any;
+    if (viewer && typeof viewer.activateAR === "function") {
+      try {
+        await viewer.activateAR();
+        return;
+      } catch (err: any) {
+        console.warn("Native WebXR activateAR threw:", err);
+      }
+    }
+
+    // 2. Android Scene Viewer intent fallback
     const isAndroid =
       isAndroidDevice ||
       (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent));
@@ -196,18 +159,7 @@ export function ARModal({
       return;
     }
 
-    // 2. WebXR / iOS Quick Look devices via model-viewer
-    const viewer = viewerRef.current as any;
-    if (viewer && typeof viewer.activateAR === "function") {
-      try {
-        await viewer.activateAR();
-        return;
-      } catch (err: any) {
-        console.warn("Native activateAR threw:", err);
-      }
-    }
-
-    // Fallback: If native AR cannot be started, open direct camera mode
+    // 3. Fallback: Open camera mode
     handleStartLiveCamera();
   };
 
@@ -567,35 +519,35 @@ export function ARModal({
                 </button>
               ) : (
                 <>
-                  {/* Primary Trigger: True AR Plane & Table Tracking */}
-                  {isAndroidDevice ? (
+                  {/* Primary Trigger: True AR Plane Tracking via WebXR */}
+                  <button
+                    type="button"
+                    onClick={handleTriggerNativeAR}
+                    className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
+                  >
+                    <Sparkles className="w-4.5 h-4.5 text-amber-300" />
+                    <span>Poser sur ma table (Vrai AR · Détection de table)</span>
+                  </button>
+
+                  {/* Alternative Option: Native Google Scene Viewer for ARCore */}
+                  {isAndroidDevice && androidSceneViewerUrl && (
                     <a
                       href={androidSceneViewerUrl}
                       rel="ar"
-                      className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98] text-center"
+                      className="w-full py-2 px-4 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors text-center"
                     >
-                      <Sparkles className="w-4.5 h-4.5 text-amber-300" />
-                      <span>Poser sur ma table (Vrai AR · Détection de table)</span>
+                      <span>Ou tenter avec Google Scene Viewer</span>
                     </a>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleTriggerNativeAR}
-                      className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
-                    >
-                      <Sparkles className="w-4.5 h-4.5 text-amber-300" />
-                      <span>Poser sur ma table (Vrai AR · Détection de table)</span>
-                    </button>
                   )}
 
-                  {/* Secondary Trigger: Live Stabilized Camera View */}
+                  {/* Secondary Option: Clean Camera View without gyro shaking */}
                   <button
                     type="button"
                     onClick={handleStartLiveCamera}
-                    className="w-full py-2.5 px-4 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors text-center"
+                    className="w-full py-2 px-4 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors text-center"
                   >
                     <Camera className="w-4 h-4 text-[#B55234]" />
-                    <span>Ou ouvrir en Mode Caméra Directe</span>
+                    <span>Mode Caméra Fixe (Sans tremblement)</span>
                   </button>
                 </>
               )}
