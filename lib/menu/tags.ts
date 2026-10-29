@@ -15,9 +15,11 @@ export const AVAILABLE_MENU_TAGS: MenuTag[] = [
 ];
 
 const TAGS_REGEX = /<!--\s*TAGS:\s*(\[[^\]]*\])\s*-->/i;
+const META_REGEX = /<!--\s*META:\s*(\{[^}]*\})\s*-->/i;
+const ALL_HTML_COMMENTS_REGEX = /<!--[\s\S]*?-->/g;
 
 export function formatDescriptionWithTags(description: string, tags: string[]): string {
-  const clean = description.replace(TAGS_REGEX, "").trim();
+  const clean = description.replace(ALL_HTML_COMMENTS_REGEX, "").trim();
   if (!tags || tags.length === 0) return clean;
   const tagComment = `<!-- TAGS:${JSON.stringify(tags)} -->`;
   return clean ? `${clean}\n${tagComment}` : tagComment;
@@ -31,21 +33,34 @@ export function parseDescriptionTags(rawDescription: string | null | undefined):
     return { text: "", tags: [] };
   }
 
-  const match = rawDescription.match(TAGS_REGEX);
-  if (match) {
-    const text = rawDescription.replace(match[0], "").trim();
+  let tags: string[] = [];
+
+  // 1. Try matching <!-- TAGS:[...] -->
+  const tagsMatch = rawDescription.match(TAGS_REGEX);
+  if (tagsMatch) {
     try {
-      const parsed = JSON.parse(match[1]);
+      const parsed = JSON.parse(tagsMatch[1]);
       if (Array.isArray(parsed)) {
-        return { text, tags: parsed };
+        tags = parsed;
       }
-    } catch {
-      // Fallback if parsing fails
-    }
-    return { text, tags: [] };
+    } catch {}
   }
 
-  return { text: rawDescription.trim(), tags: [] };
+  // 2. Try matching <!-- META:{ "tags": [...] } -->
+  const metaMatch = rawDescription.match(META_REGEX);
+  if (metaMatch && tags.length === 0) {
+    try {
+      const parsed = JSON.parse(metaMatch[1]);
+      if (parsed && Array.isArray(parsed.tags)) {
+        tags = parsed.tags;
+      }
+    } catch {}
+  }
+
+  // 3. Strip all HTML comments completely so internal metadata never leaks to user UI
+  const text = rawDescription.replace(ALL_HTML_COMMENTS_REGEX, "").trim();
+
+  return { text, tags };
 }
 
 export function getTagById(id: string): MenuTag | undefined {
