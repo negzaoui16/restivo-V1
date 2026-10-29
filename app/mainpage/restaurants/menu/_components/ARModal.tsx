@@ -47,6 +47,16 @@ export function ARModal({
   const [useSampleModel, setUseSampleModel] = useState(false);
   const arStartedRef = useRef(false);
 
+  // Live On-Screen Diagnostic State
+  const [webxrStatus, setWebxrStatus] = useState<string>("Vérification de WebXR...");
+  const [webxrOk, setWebxrOk] = useState<boolean | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const addLog = useCallback((msg: string) => {
+    const time = new Date().toLocaleTimeString();
+    setLogs((prev) => [`[${time}] ${msg}`, ...prev.slice(0, 10)]);
+  }, []);
+
   // Spatial Anchoring & Table Stabilization states
   // Initial scale set to realistic plate ratio (0.55 instead of oversized 1.0)
   const [isPinned, setIsPinned] = useState(false);
@@ -58,14 +68,20 @@ export function ARModal({
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, posX: 0, posY: 0 });
 
-  // Map internal /models/ path to jsDelivr CDN which serves valid model/gltf-binary MIME headers
+  // Clean, @-free HTTPS model URL for both Chrome and Scene Viewer
   const resolvedModelUrl = React.useMemo(() => {
-    // Isolation test: standard Google sample model to tell "phone/config problem" from "our model problem"
     if (useSampleModel) return "https://modelviewer.dev/shared-assets/models/Astronaut.glb";
     if (!modelUrl) return "";
-    if (modelUrl.includes("/models/")) {
-      const fileName = modelUrl.substring(modelUrl.lastIndexOf("/") + 1);
-      return `https://cdn.jsdelivr.net/gh/negzaoui16/restivo-V1@Negzaoui/public/models/${fileName}`;
+    // If it's a relative path like /models/..., turn into absolute HTTPS URL without any @ symbol
+    if (modelUrl.startsWith("/")) {
+      if (typeof window !== "undefined") {
+        return `${window.location.origin}${modelUrl}`;
+      }
+      return modelUrl;
+    }
+    // Remove any '@' symbol which crashes Android URI parser
+    if (modelUrl.includes("@")) {
+      return modelUrl.replace(/@[^/]+/, "");
     }
     return modelUrl;
   }, [modelUrl, useSampleModel]);
@@ -80,6 +96,36 @@ export function ARModal({
     );
     return `intent://arvr.google.com/scene-viewer/1.2?file=${file}&mode=ar_preferred&title=${title}&resizable=true&disable_occlusion=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;S.browser_fallback_url=${fallback};end;`;
   }, [resolvedModelUrl, itemName]);
+
+  // Check WebXR Device API support directly on mount
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && (navigator as any).xr) {
+      (navigator as any).xr
+        .isSessionSupported("immersive-ar")
+        .then((supported: boolean) => {
+          setWebxrOk(supported);
+          setWebxrStatus(
+            supported
+              ? "WebXR AR disponible ✅"
+              : "WebXR 'immersive-ar' non activé dans ce Chrome ❌"
+          );
+          addLog(
+            supported
+              ? "WebXR immersif supporté par Chrome ✅"
+              : "WebXR 'immersive-ar' retourné faux par Chrome"
+          );
+        })
+        .catch((err: any) => {
+          setWebxrOk(false);
+          setWebxrStatus(`Erreur WebXR: ${err?.message || err}`);
+          addLog(`Erreur check WebXR: ${err?.message || err}`);
+        });
+    } else {
+      setWebxrOk(false);
+      setWebxrStatus("API navigator.xr absente");
+      addLog("navigator.xr absent (Chrome n'expose pas l'API WebXR)");
+    }
+  }, [addLog]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -133,20 +179,64 @@ export function ARModal({
     };
   }, [isOpen, onClose, stopCameraStream]);
 
+  // 1. Explicit Test: WebXR Pur (Chrome AR inside web page)
+  const handleTestWebXR = async () => {
+    addLog("Lancement WebXR via model-viewer...");
+    const viewer = viewerRef.current as any;
+    if (!viewer) {
+      addLog("❌ model-viewer non trouvé sur la page");
+      return;
+    }
+    if (typeof viewer.activateAR !== "function") {
+      addLog("❌ viewer.activateAR n'est pas une fonction");
+      return;
+    }
+    try {
+      await viewer.activateAR();
+      addLog("Appel activateAR() exécuté avec succès");
+    } catch (err: any) {
+      addLog(`❌ Échec WebXR: ${err?.message || JSON.stringify(err)}`);
+    }
+  };
+
+  // 2. Explicit Test: Google Scene Viewer Intent with clean URL
+  const handleTestSceneViewer = () => {
+    addLog("Lancement Scene Viewer...");
+    addLog(`URL: ${resolvedModelUrl.substring(resolvedModelUrl.lastIndexOf("/") + 1)}`);
+    if (androidSceneViewerUrl) {
+      window.location.href = androidSceneViewerUrl;
+    } else {
+      addLog("❌ androidSceneViewerUrl indisponible");
+    }
+  };
+
+  // 3. Explicit Test: Toggle between Dish model and Google Astronaut model
+  const handleToggleAstronaut = () => {
+    const next = !useSampleModel;
+    setUseSampleModel(next);
+    addLog(
+      next
+        ? "Modèle sélectionné: Astronaute Google officiel"
+        : "Modèle sélectionné: Plat du restaurant (Pizza)"
+    );
+  };
+
   // Trigger true native AR (WebXR directly inside Chrome, or Google Scene Viewer)
   const handleTriggerNativeAR = async () => {
     setArDiag(null);
     setCameraError(null);
     arStartedRef.current = false;
+    addLog("Clic 'Poser sur ma table'...");
 
     // 1. Priority: Try WebXR directly inside Chrome (uses ARCore without launching Google App)
     const viewer = viewerRef.current as any;
     if (viewer && typeof viewer.activateAR === "function") {
       try {
         await viewer.activateAR();
+        addLog("activateAR() lancé");
         return;
       } catch (err: any) {
-        console.warn("Native WebXR activateAR threw:", err);
+        addLog(`WebXR n'a pas pu démarrer: ${err?.message || err}`);
       }
     }
 
@@ -155,11 +245,13 @@ export function ARModal({
       isAndroidDevice ||
       (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent));
     if (isAndroid && androidSceneViewerUrl) {
+      addLog("Bascule vers Scene Viewer Android...");
       window.location.href = androidSceneViewerUrl;
       return;
     }
 
     // 3. Fallback: Open camera mode
+    addLog("Ouverture mode caméra fixe...");
     handleStartLiveCamera();
   };
 
@@ -171,26 +263,35 @@ export function ARModal({
 
     const onArStatus = (e: any) => {
       const status = e?.detail?.status;
+      addLog(`Événement ar-status: ${status}`);
       if (status === "session-started" || status === "object-placed") {
         arStartedRef.current = true;
         setArDiag(null);
       }
       if (status === "failed") {
+        addLog("❌ Échec ar-status: failed");
         setArDiag("Le système AR a signalé un échec (ARCore / Scene Viewer). Utilisez le mode caméra.");
       }
     };
     const onError = (e: any) => {
       const msg = e?.detail?.sourceError?.message || e?.detail?.type || "erreur inconnue";
+      addLog(`❌ Erreur chargement 3D: ${msg}`);
       setArDiag(`Erreur de chargement du modèle 3D : ${msg}`);
+    };
+
+    const onLoad = () => {
+      addLog("Modèle 3D chargé avec succès dans le viewer ✅");
     };
 
     viewer.addEventListener("ar-status", onArStatus);
     viewer.addEventListener("error", onError);
+    viewer.addEventListener("load", onLoad);
     return () => {
       viewer.removeEventListener("ar-status", onArStatus);
       viewer.removeEventListener("error", onError);
+      viewer.removeEventListener("load", onLoad);
     };
-  }, [isOpen, resolvedModelUrl]);
+  }, [isOpen, resolvedModelUrl, addLog]);
 
   const handleStartLiveCamera = async () => {
     setCameraError(null);
@@ -529,16 +630,82 @@ export function ARModal({
                     <span>Poser sur ma table (Vrai AR · Détection de table)</span>
                   </button>
 
-                  {/* Alternative Option: Native Google Scene Viewer for ARCore */}
-                  {isAndroidDevice && androidSceneViewerUrl && (
-                    <a
-                      href={androidSceneViewerUrl}
-                      rel="ar"
-                      className="w-full py-2 px-4 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors text-center"
-                    >
-                      <span>Ou tenter avec Google Scene Viewer</span>
-                    </a>
-                  )}
+                  {/* Live Diagnostic Console & 3 Explicit Test Buttons */}
+                  <div className="p-3 rounded-2xl bg-zinc-950 text-white text-xs border border-zinc-800 shadow-xl space-y-2">
+                    <div className="flex items-center justify-between pb-1.5 border-b border-zinc-800 text-[11px]">
+                      <div className="flex items-center gap-2 font-bold tracking-wide text-zinc-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>CONSOLE DIAGNOSTIC AR</span>
+                      </div>
+                      <span className="text-[10px] text-zinc-400 font-mono">
+                        {useSampleModel ? "⭐ Astronaute" : "🍕 Modèle Plat"}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1 font-mono text-[10px] text-zinc-300">
+                      <div className="flex justify-between">
+                        <span className="text-zinc-500">WebXR Chrome:</span>
+                        <span className={webxrOk ? "text-emerald-400 font-bold" : "text-amber-400"}>
+                          {webxrStatus}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-zinc-500">Modèle chargé:</span>
+                        <span className="text-zinc-300 truncate max-w-[200px]">
+                          {resolvedModelUrl.split("/").pop()}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Live log entries */}
+                    <div className="p-2 rounded-xl bg-black/80 border border-zinc-800/80 font-mono text-[10px] space-y-0.5 max-h-24 overflow-y-auto">
+                      {logs.length === 0 ? (
+                        <span className="text-zinc-500">Cliquez sur un test ci-dessous pour voir l'erreur...</span>
+                      ) : (
+                        logs.map((log, i) => (
+                          <div
+                            key={i}
+                            className={
+                              log.includes("❌")
+                                ? "text-red-400 font-semibold"
+                                : log.includes("✅")
+                                ? "text-emerald-400"
+                                : "text-zinc-300"
+                            }
+                          >
+                            {log}
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {/* 3 Explicit Test Buttons */}
+                    <div className="grid grid-cols-3 gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleTestWebXR}
+                        className="py-2 px-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold text-[10px] text-center"
+                      >
+                        1. WebXR Pur
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleTestSceneViewer}
+                        className="py-2 px-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white font-bold text-[10px] text-center"
+                      >
+                        2. Scene Viewer
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleToggleAstronaut}
+                        className="py-2 px-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-amber-300 font-bold text-[10px] text-center border border-zinc-700"
+                      >
+                        3. {useSampleModel ? "Plat Pizza" : "Astronaute"}
+                      </button>
+                    </div>
+                  </div>
 
                   {/* Secondary Option: Clean Camera View without gyro shaking */}
                   <button
@@ -550,29 +717,6 @@ export function ARModal({
                     <span>Mode Caméra Fixe (Sans tremblement)</span>
                   </button>
                 </>
-              )}
-
-              {/* AR diagnostic: real reason when native AR fails */}
-              {arDiag && !isCameraActive && (
-                <div className="px-3 py-2 rounded-xl bg-red-50 border border-red-200 text-red-800 text-[11px] leading-snug">
-                  ⚠️ {arDiag}
-                </div>
-              )}
-
-              {/* Isolation test: standard Google model vs our own model */}
-              {!isCameraActive && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setArDiag(null);
-                    setUseSampleModel((v) => !v);
-                  }}
-                  className="text-[11px] text-[#8A847C] underline underline-offset-2 text-center"
-                >
-                  {useSampleModel
-                    ? "Revenir au modèle du plat"
-                    : "🔧 Test : essayer l'AR avec un modèle standard (astronaute)"}
-                </button>
               )}
 
               <p className="text-[11px] text-[#736D65] text-center leading-relaxed">
