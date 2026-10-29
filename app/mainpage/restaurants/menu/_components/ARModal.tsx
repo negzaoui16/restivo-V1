@@ -1,11 +1,9 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { startTableAR, prepareTableAR } from "./startTableAR";
 import {
   X,
   Box,
-  Smartphone,
   Sparkles,
   Camera,
   VideoOff,
@@ -14,6 +12,7 @@ import {
   Lock,
   Plus,
   Minus,
+  RotateCw,
 } from "lucide-react";
 
 // Web component custom element reference
@@ -43,51 +42,34 @@ export function ARModal({
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // AR diagnostics: shows the real reason when native AR cannot start
-  const [arDiag, setArDiag] = useState<string | null>(null);
-  const [useSampleModel, setUseSampleModel] = useState(false);
-  const arStartedRef = useRef(false);
-
-  // Live On-Screen Diagnostic State
-  const [webxrStatus, setWebxrStatus] = useState<string>("Vérification de WebXR...");
-  const [webxrOk, setWebxrOk] = useState<boolean | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-
-  const addLog = useCallback((msg: string) => {
-    const time = new Date().toLocaleTimeString();
-    setLogs((prev) => [`[${time}] ${msg}`, ...prev.slice(0, 10)]);
-  }, []);
-
-  // Spatial Anchoring & Table Stabilization states
-  // Initial scale set to realistic plate ratio (0.55 instead of oversized 1.0)
+  // Position, scale & rotation of dish in Camera AR Mode
   const [isPinned, setIsPinned] = useState(false);
-  const [scale, setScale] = useState(0.55);
-  const [pos, setPos] = useState({ x: 0, y: 60 });
-  const [gyroOffset, setGyroOffset] = useState({ x: 0, y: 0, rotation: 0 });
+  const [scale, setScale] = useState(0.65);
+  const [pos, setPos] = useState({ x: 0, y: 50 });
+  const [rotationDeg, setRotationDeg] = useState(0);
 
-  const baselineOrientation = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  // Touch Drag & Pinch-to-zoom tracking
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, posX: 0, posY: 0 });
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartScale = useRef(0.65);
 
-  // Clean, @-free HTTPS model URL for both Chrome and Scene Viewer
+  // Clean, @-free HTTPS model URL
   const resolvedModelUrl = React.useMemo(() => {
-    if (useSampleModel) return "https://modelviewer.dev/shared-assets/models/Astronaut.glb";
     if (!modelUrl) return "";
-    // If it's a relative path like /models/..., turn into absolute HTTPS URL without any @ symbol
     if (modelUrl.startsWith("/")) {
       if (typeof window !== "undefined") {
         return `${window.location.origin}${modelUrl}`;
       }
       return modelUrl;
     }
-    // Remove any '@' symbol which crashes Android URI parser
     if (modelUrl.includes("@")) {
       return modelUrl.replace(/@[^/]+/, "");
     }
     return modelUrl;
-  }, [modelUrl, useSampleModel]);
+  }, [modelUrl]);
 
-  // Direct, high-priority Google Scene Viewer intent for Android ARCore devices
+  // Direct Google Scene Viewer intent for Android fallback
   const androidSceneViewerUrl = React.useMemo(() => {
     if (!resolvedModelUrl) return "";
     const file = encodeURIComponent(resolvedModelUrl);
@@ -97,44 +79,6 @@ export function ARModal({
     );
     return `intent://arvr.google.com/scene-viewer/1.2?file=${file}&mode=ar_preferred&title=${title}&resizable=true&disable_occlusion=true#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;S.browser_fallback_url=${fallback};end;`;
   }, [resolvedModelUrl, itemName]);
-
-  // Check WebXR Device API support directly on mount
-  useEffect(() => {
-    if (typeof navigator !== "undefined" && (navigator as any).xr) {
-      (navigator as any).xr
-        .isSessionSupported("immersive-ar")
-        .then((supported: boolean) => {
-          setWebxrOk(supported);
-          setWebxrStatus(
-            supported
-              ? "WebXR AR disponible ✅"
-              : "WebXR 'immersive-ar' non activé dans ce Chrome ❌"
-          );
-          addLog(
-            supported
-              ? "WebXR immersif supporté par Chrome ✅"
-              : "WebXR 'immersive-ar' retourné faux par Chrome"
-          );
-        })
-        .catch((err: any) => {
-          setWebxrOk(false);
-          setWebxrStatus(`Erreur WebXR: ${err?.message || err}`);
-          addLog(`Erreur check WebXR: ${err?.message || err}`);
-        });
-    } else {
-      setWebxrOk(false);
-      setWebxrStatus("API navigator.xr absente");
-      addLog("navigator.xr absent (Chrome n'expose pas l'API WebXR)");
-    }
-  }, [addLog]);
-
-  // Pre-load three.js + the dish model so the AR click starts instantly
-  useEffect(() => {
-    if (!isOpen || !webxrOk || !resolvedModelUrl) return;
-    prepareTableAR(resolvedModelUrl)
-      .then(() => addLog("Moteur AR + modèle préchargés ✅"))
-      .catch((err: any) => addLog(`❌ Préchargement AR: ${err?.message || err}`));
-  }, [isOpen, webxrOk, resolvedModelUrl, addLog]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -146,11 +90,6 @@ export function ARModal({
     setIsMobileDevice(isMobileUA || (isTouchDevice && window.innerWidth <= 1024));
   }, []);
 
-  // Rock-solid table placement in camera mode without gyro shaking or floating
-  useEffect(() => {
-    setGyroOffset({ x: 0, y: 0, rotation: 0 });
-  }, [isCameraActive]);
-
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -161,8 +100,9 @@ export function ARModal({
     }
     setIsCameraActive(false);
     setIsPinned(false);
-    setPos({ x: 0, y: 60 });
-    setScale(0.55);
+    setPos({ x: 0, y: 50 });
+    setScale(0.65);
+    setRotationDeg(0);
   }, []);
 
   useEffect(() => {
@@ -188,139 +128,17 @@ export function ARModal({
     };
   }, [isOpen, onClose, stopCameraStream]);
 
-  // 1. Custom WebXR AR (own three.js viewer with live status, reticle and fallback placement)
-  const handleTestWebXR = async () => {
-    addLog("Lancement WebXR (viewer personnalisé)...");
-    try {
-      await startTableAR({
-        modelUrl: resolvedModelUrl,
-        title: itemName,
-        log: addLog,
-        onEnd: () => addLog("Retour à la page"),
-      });
-    } catch (err: any) {
-      addLog(`❌ Échec WebXR: ${err?.message || JSON.stringify(err)}`);
-      setArDiag(`WebXR: ${err?.message || "erreur inconnue"}`);
-    }
-  };
-
-  // 2. Explicit Test: Google Scene Viewer Intent with clean URL
-  const handleTestSceneViewer = () => {
-    addLog("Lancement Scene Viewer...");
-    addLog(`URL: ${resolvedModelUrl.substring(resolvedModelUrl.lastIndexOf("/") + 1)}`);
-    if (androidSceneViewerUrl) {
-      window.location.href = androidSceneViewerUrl;
-    } else {
-      addLog("❌ androidSceneViewerUrl indisponible");
-    }
-  };
-
-  // 3. Explicit Test: Toggle between Dish model and Google Astronaut model
-  const handleToggleAstronaut = () => {
-    const next = !useSampleModel;
-    setUseSampleModel(next);
-    addLog(
-      next
-        ? "Modèle sélectionné: Astronaute Google officiel"
-        : "Modèle sélectionné: Plat du restaurant (Pizza)"
-    );
-  };
-
-  // Trigger true native AR (WebXR directly inside Chrome, or Google Scene Viewer)
-  const handleTriggerNativeAR = async () => {
-    setArDiag(null);
-    setCameraError(null);
-    arStartedRef.current = false;
-    addLog("Clic 'Poser sur ma table'...");
-
-    // 1. Priority: our own WebXR viewer inside Chrome (ARCore, no Google app needed)
-    if (webxrOk) {
-      try {
-        await startTableAR({
-          modelUrl: resolvedModelUrl,
-          title: itemName,
-          log: addLog,
-          onEnd: () => addLog("Retour à la page"),
-        });
-        return;
-      } catch (err: any) {
-        addLog(`❌ WebXR n'a pas pu démarrer: ${err?.message || err}`);
-      }
-    }
-
-    // 2. Android Scene Viewer intent fallback
-    const isAndroid =
-      isAndroidDevice ||
-      (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent));
-    if (isAndroid && androidSceneViewerUrl) {
-      addLog("Bascule vers Scene Viewer Android...");
-      window.location.href = androidSceneViewerUrl;
-      return;
-    }
-
-    // 3. Fallback: Open camera mode
-    addLog("Ouverture mode caméra fixe...");
-    handleStartLiveCamera();
-  };
-
-  // Listen to model-viewer events to understand why AR works or fails
-  useEffect(() => {
-    if (!isOpen) return;
-    const viewer = viewerRef.current as any;
-    if (!viewer) return;
-
-    const onArStatus = (e: any) => {
-      const status = e?.detail?.status;
-      addLog(`Événement ar-status: ${status}`);
-      if (status === "session-started" || status === "object-placed") {
-        arStartedRef.current = true;
-        setArDiag(null);
-      }
-      if (status === "failed") {
-        addLog("❌ Échec ar-status: failed");
-        setArDiag("Le système AR a signalé un échec (ARCore / Scene Viewer). Utilisez le mode caméra.");
-      }
-    };
-    const onError = (e: any) => {
-      const msg = e?.detail?.sourceError?.message || e?.detail?.type || "erreur inconnue";
-      addLog(`❌ Erreur chargement 3D: ${msg}`);
-      setArDiag(`Erreur de chargement du modèle 3D : ${msg}`);
-    };
-
-    const onLoad = () => {
-      addLog("Modèle 3D chargé avec succès dans le viewer ✅");
-    };
-
-    viewer.addEventListener("ar-status", onArStatus);
-    viewer.addEventListener("error", onError);
-    viewer.addEventListener("load", onLoad);
-    return () => {
-      viewer.removeEventListener("ar-status", onArStatus);
-      viewer.removeEventListener("error", onError);
-      viewer.removeEventListener("load", onLoad);
-    };
-  }, [isOpen, resolvedModelUrl, addLog]);
-
+  // Start live camera stream (Solution 2)
   const handleStartLiveCamera = async () => {
     setCameraError(null);
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setCameraError(
-        "L'accès caméra direct nécessite une connexion HTTPS sécurisée."
+        "L'accès caméra nécessite une connexion HTTPS sécurisée."
       );
       return;
     }
 
     try {
-      // Request permission for DeviceOrientation on iOS 13+
-      if (
-        typeof (DeviceOrientationEvent as any) !== "undefined" &&
-        typeof (DeviceOrientationEvent as any).requestPermission === "function"
-      ) {
-        try {
-          await (DeviceOrientationEvent as any).requestPermission();
-        } catch {}
-      }
-
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
@@ -336,11 +154,11 @@ export function ARModal({
         await videoRef.current.play();
       }
       setCameraError(null);
-      setArDiag(null);
       setIsCameraActive(true);
       setIsPinned(false);
-      setPos({ x: 0, y: 60 });
-      setScale(0.55);
+      setPos({ x: 0, y: 50 });
+      setScale(0.65);
+      setRotationDeg(0);
     } catch (err: any) {
       console.warn("Live camera access failed:", err);
       setCameraError(
@@ -349,51 +167,65 @@ export function ARModal({
     }
   };
 
-  // Touch drag handlers to position food anywhere on the table
+  // Touch drag (1 finger) + Pinch to zoom (2 fingers)
   const handleTouchStart = (e: React.TouchEvent) => {
     if (isPinned) return;
-    const t = e.touches[0];
-    isDragging.current = true;
-    dragStart.current = {
-      x: t.clientX,
-      y: t.clientY,
-      posX: pos.x,
-      posY: pos.y,
-    };
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      isDragging.current = true;
+      dragStart.current = {
+        x: t.clientX,
+        y: t.clientY,
+        posX: pos.x,
+        posY: pos.y,
+      };
+      pinchStartDist.current = null;
+    } else if (e.touches.length === 2) {
+      isDragging.current = false;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDist.current = Math.hypot(dx, dy);
+      pinchStartScale.current = scale;
+    }
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isDragging.current || isPinned) return;
-    const t = e.touches[0];
-    const dx = t.clientX - dragStart.current.x;
-    const dy = t.clientY - dragStart.current.y;
-    setPos({
-      x: dragStart.current.posX + dx,
-      y: dragStart.current.posY + dy,
-    });
+    if (isPinned) return;
+    if (e.touches.length === 1 && isDragging.current) {
+      const t = e.touches[0];
+      const dx = t.clientX - dragStart.current.x;
+      const dy = t.clientY - dragStart.current.y;
+      setPos({
+        x: dragStart.current.posX + dx,
+        y: dragStart.current.posY + dy,
+      });
+    } else if (e.touches.length === 2 && pinchStartDist.current !== null) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const ratio = dist / pinchStartDist.current;
+      const nextScale = Math.min(1.8, Math.max(0.25, pinchStartScale.current * ratio));
+      setScale(Number(nextScale.toFixed(2)));
+    }
   };
 
   const handleTouchEnd = () => {
     isDragging.current = false;
+    pinchStartDist.current = null;
   };
 
   const togglePin = () => {
-    if (!isPinned) {
-      // Bake the current sensor offset into the position so the dish stays exactly where it is
-      setPos((p) => ({ x: p.x + gyroOffset.x, y: p.y + gyroOffset.y }));
-      setGyroOffset((g) => ({ x: 0, y: 0, rotation: g.rotation }));
-      setIsPinned(true);
-    } else {
-      baselineOrientation.current = null;
-      setIsPinned(false);
-    }
+    setIsPinned((prev) => !prev);
   };
 
-  const resetAnchor = () => {
-    baselineOrientation.current = null;
-    setGyroOffset({ x: 0, y: 0, rotation: 0 });
-    setPos({ x: 0, y: 60 });
-    setScale(0.55);
+  const rotateDish = () => {
+    setRotationDeg((prev) => (prev + 45) % 360);
+  };
+
+  const resetPosition = () => {
+    setPos({ x: 0, y: 50 });
+    setScale(0.65);
+    setRotationDeg(0);
     setIsPinned(false);
   };
 
@@ -401,32 +233,32 @@ export function ARModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-sm animate-in fade-in duration-200"
       role="dialog"
       aria-modal="true"
     >
       <div
         className={`relative w-full ${
-          isCameraActive ? "max-w-2xl h-[94vh]" : "max-w-xl max-h-[90vh]"
+          isCameraActive ? "max-w-3xl h-[95vh]" : "max-w-xl max-h-[90vh]"
         } bg-white rounded-3xl shadow-2xl overflow-hidden border border-[#E8E2D7] flex flex-col transition-all duration-300`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[#E8E2D7] bg-[#FAF7F2] z-20">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#E8E2D7] bg-[#FAF7F2] z-20">
+          <div className="flex items-center gap-2.5">
             <div
-              className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+              className={`w-9 h-9 rounded-2xl flex items-center justify-center ${
                 isCameraActive
-                  ? "bg-emerald-100 text-emerald-700 animate-pulse"
+                  ? "bg-emerald-100 text-emerald-700 shadow-sm"
                   : "bg-purple-100 text-purple-700"
               }`}
             >
-              <Box className="w-4 h-4" />
+              <Box className="w-5 h-5" />
             </div>
             <div>
               <h3 className="text-sm font-bold text-[#1A1A1A] line-clamp-1">{itemName}</h3>
-              <p className="text-[11px] text-[#736D65] flex items-center gap-1">
+              <p className="text-[11px] text-[#736D65] flex items-center gap-1 font-medium">
                 <Sparkles className="w-3 h-3 text-amber-500" />
-                {isCameraActive ? "Réalité Augmentée · Ancrage sur table" : "Vue 3D & Réalité Augmentée"}
+                {isCameraActive ? "Réalité Augmentée · Vue Caméra en Direct" : "Vue 3D Interactive"}
               </p>
             </div>
           </div>
@@ -436,7 +268,7 @@ export function ARModal({
               stopCameraStream();
               onClose();
             }}
-            aria-label="Fermer la vue 3D"
+            aria-label="Fermer"
             title="Fermer"
             className="w-8 h-8 rounded-full bg-white hover:bg-[#E8E2D7] text-[#736D65] flex items-center justify-center transition-colors shadow-sm"
           >
@@ -444,11 +276,11 @@ export function ARModal({
           </button>
         </div>
 
-        {/* 3D Viewport with Live Camera + Spatial Table Stabilization */}
+        {/* 3D Viewport with Live Camera Overlay */}
         <div
           className={`relative flex-1 ${
-            isCameraActive ? "min-h-[480px] bg-black" : "min-h-[380px] bg-gradient-to-b from-[#FAF7F2] to-[#ECE6DC]"
-          } overflow-hidden flex items-center justify-center`}
+            isCameraActive ? "min-h-[500px] bg-black" : "min-h-[380px] bg-gradient-to-b from-[#FAF7F2] to-[#ECE6DC]"
+          } overflow-hidden flex items-center justify-center select-none`}
           onTouchStart={isCameraActive ? handleTouchStart : undefined}
           onTouchMove={isCameraActive ? handleTouchMove : undefined}
           onTouchEnd={isCameraActive ? handleTouchEnd : undefined}
@@ -464,12 +296,27 @@ export function ARModal({
             }`}
           />
 
-          {/* Model-Viewer with Gyroscope & Spatial Translation */}
+          {/* Realistic Contact Shadow (Visible in Camera Mode under the dish) */}
+          {isCameraActive && (
+            <div
+              className="absolute pointer-events-none transition-transform duration-75"
+              style={{
+                transform: `translate3d(${pos.x}px, ${pos.y + 110 * scale}px, 0px) scale(${scale})`,
+                width: "280px",
+                height: "90px",
+                borderRadius: "50%",
+                background: "radial-gradient(ellipse at center, rgba(0,0,0,0.65) 0%, rgba(0,0,0,0.3) 45%, rgba(0,0,0,0) 75%)",
+                zIndex: 5,
+              }}
+            />
+          )}
+
+          {/* 3D Food Model Container */}
           <div
             className="w-full h-full flex items-center justify-center pointer-events-auto"
             style={{
               transform: isCameraActive
-                ? `translate3d(${pos.x + gyroOffset.x}px, ${pos.y + gyroOffset.y}px, 0px) scale(${scale}) rotate(${gyroOffset.rotation}deg)`
+                ? `translate3d(${pos.x}px, ${pos.y}px, 0px) scale(${scale}) rotate(${rotationDeg}deg)`
                 : "none",
               transition: isDragging.current ? "none" : "transform 0.08s ease-out",
               willChange: "transform",
@@ -481,90 +328,101 @@ export function ARModal({
               ref={viewerRef}
               src={resolvedModelUrl}
               poster={imageUrl ?? undefined}
-              alt={`3D model of ${itemName}`}
-              auto-rotate={!isCameraActive ? true : undefined}
+              alt={`Modèle 3D de ${itemName}`}
+              auto-rotate={!isCameraActive}
               camera-controls={true}
               bounds="tight"
               min-camera-orbit="auto 0deg auto"
               max-camera-orbit="auto 88deg auto"
-              exposure="1.15"
+              exposure="1.2"
               shadow-intensity={isCameraActive ? "2.2" : "1.2"}
               shadow-softness="0.5"
-              touch-action={isCameraActive ? "none" : "pan-y"}
+              touch-action={isCameraActive && !isPinned ? "none" : "pan-y"}
               style={{
                 width: "100%",
                 height: "100%",
-                minHeight: isCameraActive ? "480px" : "380px",
+                minHeight: isCameraActive ? "500px" : "380px",
                 backgroundColor: "transparent",
                 outline: "none",
               }}
             />
           </div>
 
-          {/* Camera AR HUD Overlay Status */}
+          {/* Top HUD Badge in Camera Mode */}
           {isCameraActive && (
             <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-2 pointer-events-none">
               <div
-                className={`flex items-center gap-1.5 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-semibold border shadow-md ${
+                className={`flex items-center gap-2 backdrop-blur-md px-3.5 py-1.5 rounded-full text-white text-[12px] font-semibold border shadow-lg ${
                   isPinned
-                    ? "bg-emerald-950/80 border-emerald-400 text-emerald-200"
+                    ? "bg-emerald-950/85 border-emerald-400 text-emerald-200"
                     : "bg-black/75 border-white/20 text-white"
                 }`}
               >
                 <span
-                  className={`w-2 h-2 rounded-full ${
+                  className={`w-2.5 h-2.5 rounded-full ${
                     isPinned ? "bg-emerald-400" : "bg-amber-400 animate-ping"
                   }`}
                 />
                 <span>
                   {isPinned
-                    ? "Plat fixé sur la table · Tournez autour"
-                    : "Ajustez la position puis cliquez 'Fixer'"}
+                    ? "Plat fixé sur votre table ✅"
+                    : "Glissez avec le doigt pour placer le plat"}
                 </span>
               </div>
 
               <button
                 type="button"
-                onClick={resetAnchor}
-                className="pointer-events-auto p-2 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 shadow-md transition-transform active:scale-90"
-                title="Recalibrer le centre"
+                onClick={resetPosition}
+                className="pointer-events-auto p-2.5 rounded-full bg-black/65 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 shadow-md transition-transform active:scale-90"
+                title="Recentrer le plat"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
             </div>
           )}
 
-          {/* Floating Scale & Anchor Controls inside Camera View */}
+          {/* Floating Controls inside Camera View (Bottom HUD) */}
           {isCameraActive && (
-            <div className="absolute bottom-3 left-3 right-3 z-30 flex items-center justify-between gap-2 pointer-events-auto">
-              {/* Scale Zoom Buttons with percentage */}
-              <div className="flex items-center bg-black/70 backdrop-blur-md rounded-2xl border border-white/20 p-1 text-white shadow-lg">
+            <div className="absolute bottom-4 left-3 right-3 z-30 flex items-center justify-between gap-2 pointer-events-auto">
+              {/* Zoom Scale Buttons */}
+              <div className="flex items-center bg-black/75 backdrop-blur-md rounded-2xl border border-white/20 p-1 text-white shadow-xl">
                 <button
                   type="button"
                   onClick={() => setScale((s) => Math.max(0.25, Number((s - 0.08).toFixed(2))))}
                   className="w-8 h-8 rounded-xl hover:bg-white/20 flex items-center justify-center transition-colors active:scale-95"
-                  title="Réduire"
+                  title="Réduire la taille"
                 >
                   <Minus className="w-4 h-4" />
                 </button>
-                <span className="text-[11px] font-bold px-2.5 min-w-[50px] text-center">
+                <span className="text-[11px] font-bold px-2 min-w-[46px] text-center">
                   {Math.round(scale * 100)}%
                 </span>
                 <button
                   type="button"
                   onClick={() => setScale((s) => Math.min(1.8, Number((s + 0.08).toFixed(2))))}
                   className="w-8 h-8 rounded-xl hover:bg-white/20 flex items-center justify-center transition-colors active:scale-95"
-                  title="Agrandir"
+                  title="Agrandir la taille"
                 >
                   <Plus className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Pin / Lock Button */}
+              {/* Rotate Button */}
+              <button
+                type="button"
+                onClick={rotateDish}
+                className="p-2.5 rounded-2xl bg-black/75 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 shadow-xl flex items-center gap-1.5 text-xs font-bold active:scale-95 transition-all"
+                title="Tourner le plat de 45°"
+              >
+                <RotateCw className="w-4 h-4 text-amber-300" />
+                <span>⟳ Tourner</span>
+              </button>
+
+              {/* Pin / Lock on Table Button */}
               <button
                 type="button"
                 onClick={togglePin}
-                className={`py-2 px-4 rounded-2xl text-xs font-bold shadow-lg flex items-center gap-1.5 transition-all active:scale-95 ${
+                className={`py-2.5 px-4 rounded-2xl text-xs font-bold shadow-xl flex items-center gap-1.5 transition-all active:scale-95 ${
                   isPinned
                     ? "bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300"
                     : "bg-[#B55234] hover:bg-[#9E4328] text-white"
@@ -572,13 +430,13 @@ export function ARModal({
               >
                 {isPinned ? (
                   <>
-                    <Lock className="w-3.5 h-3.5" />
-                    <span>Fixé sur table</span>
+                    <Lock className="w-4 h-4" />
+                    <span>Fixé</span>
                   </>
                 ) : (
                   <>
-                    <Pin className="w-3.5 h-3.5" />
-                    <span>Fixer sur ma table</span>
+                    <Pin className="w-4 h-4" />
+                    <span>Fixer sur table</span>
                   </>
                 )}
               </button>
@@ -586,14 +444,14 @@ export function ARModal({
           )}
         </div>
 
-        {/* Camera Error Alert */}
+        {/* Camera Error Message */}
         {cameraError && (
-          <div className="px-4 py-2 bg-amber-50 border-t border-amber-200 text-amber-800 text-xs flex items-center justify-between">
+          <div className="px-4 py-2.5 bg-amber-50 border-t border-amber-200 text-amber-800 text-xs flex items-center justify-between">
             <span>{cameraError}</span>
             <button
               type="button"
               onClick={() => setCameraError(null)}
-              className="text-amber-900 font-bold ml-2"
+              className="text-amber-900 font-bold ml-2 text-sm"
             >
               ×
             </button>
@@ -602,131 +460,43 @@ export function ARModal({
 
         {/* Footer Actions */}
         <div className="px-5 py-3.5 bg-white border-t border-[#E8E2D7] flex flex-col gap-2 z-20">
-          {isMobileDevice ? (
+          {isCameraActive ? (
+            <button
+              type="button"
+              onClick={stopCameraStream}
+              className="w-full py-3 px-4 rounded-2xl bg-zinc-900 hover:bg-black text-white text-xs sm:text-sm font-bold shadow-md flex items-center justify-center gap-2 transition-transform active:scale-98"
+            >
+              <VideoOff className="w-4 h-4 text-red-400" />
+              <span>Quitter le mode caméra (Retour à la vue 3D)</span>
+            </button>
+          ) : (
             <div className="flex flex-col gap-2">
-              {isCameraActive ? (
+              {/* Primary Action: Launch Camera AR Mode */}
+              <button
+                type="button"
+                onClick={handleStartLiveCamera}
+                className="w-full py-3.5 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-sm font-bold shadow-lg flex items-center justify-center gap-2.5 transition-all hover:scale-[1.01] active:scale-[0.98]"
+              >
+                <Camera className="w-5 h-5 text-amber-200" />
+                <span>📸 Poser sur ma table (Caméra Réalité Augmentée)</span>
+              </button>
+
+              {/* Optional Android Google Scene Viewer fallback */}
+              {isAndroidDevice && androidSceneViewerUrl && (
                 <button
                   type="button"
-                  onClick={stopCameraStream}
-                  className="w-full py-3 px-4 rounded-2xl bg-zinc-800 hover:bg-zinc-900 text-white text-xs sm:text-sm font-bold shadow-md flex items-center justify-center gap-2 transition-transform active:scale-98"
+                  onClick={() => {
+                    window.location.href = androidSceneViewerUrl;
+                  }}
+                  className="w-full py-2 px-3 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
                 >
-                  <VideoOff className="w-4 h-4 text-red-400" />
-                  <span>Quitter le mode caméra</span>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Ouvrir dans Google 3D (Scene Viewer)</span>
                 </button>
-              ) : (
-                <>
-                  {/* Primary Trigger: True AR Plane Tracking via WebXR */}
-                  <button
-                    type="button"
-                    onClick={handleTriggerNativeAR}
-                    className="w-full py-3 px-5 rounded-2xl bg-[#B55234] hover:bg-[#9E4328] active:bg-[#87341C] text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.98]"
-                  >
-                    <Sparkles className="w-4.5 h-4.5 text-amber-300" />
-                    <span>Poser sur ma table (Vrai AR · Détection de table)</span>
-                  </button>
-
-                  {/* Live Diagnostic Console & 3 Explicit Test Buttons */}
-                  <div className="p-3 rounded-2xl bg-zinc-950 text-white text-xs border border-zinc-800 shadow-xl space-y-2">
-                    <div className="flex items-center justify-between pb-1.5 border-b border-zinc-800 text-[11px]">
-                      <div className="flex items-center gap-2 font-bold tracking-wide text-zinc-200">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <span>CONSOLE DIAGNOSTIC AR</span>
-                      </div>
-                      <span className="text-[10px] text-zinc-400 font-mono">
-                        {useSampleModel ? "⭐ Astronaute" : "🍕 Modèle Plat"}
-                      </span>
-                    </div>
-
-                    <div className="space-y-1 font-mono text-[10px] text-zinc-300">
-                      <div className="flex justify-between">
-                        <span className="text-zinc-500">WebXR Chrome:</span>
-                        <span className={webxrOk ? "text-emerald-400 font-bold" : "text-amber-400"}>
-                          {webxrStatus}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-zinc-500">Modèle chargé:</span>
-                        <span className="text-zinc-300 truncate max-w-[200px]">
-                          {resolvedModelUrl.split("/").pop()}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Live log entries */}
-                    <div className="p-2 rounded-xl bg-black/80 border border-zinc-800/80 font-mono text-[10px] space-y-0.5 max-h-24 overflow-y-auto">
-                      {logs.length === 0 ? (
-                        <span className="text-zinc-500">Cliquez sur un test ci-dessous pour voir l'erreur...</span>
-                      ) : (
-                        logs.map((log, i) => (
-                          <div
-                            key={i}
-                            className={
-                              log.includes("❌")
-                                ? "text-red-400 font-semibold"
-                                : log.includes("✅")
-                                ? "text-emerald-400"
-                                : "text-zinc-300"
-                            }
-                          >
-                            {log}
-                          </div>
-                        ))
-                      )}
-                    </div>
-
-                    {/* 3 Explicit Test Buttons */}
-                    <div className="grid grid-cols-3 gap-1.5 pt-1">
-                      <button
-                        type="button"
-                        onClick={handleTestWebXR}
-                        className="py-2 px-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold text-[10px] text-center"
-                      >
-                        1. WebXR Pur
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleTestSceneViewer}
-                        className="py-2 px-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white font-bold text-[10px] text-center"
-                      >
-                        2. Scene Viewer
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleToggleAstronaut}
-                        className="py-2 px-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-amber-300 font-bold text-[10px] text-center border border-zinc-700"
-                      >
-                        3. {useSampleModel ? "Plat Pizza" : "Astronaute"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Secondary Option: Clean Camera View without gyro shaking */}
-                  <button
-                    type="button"
-                    onClick={handleStartLiveCamera}
-                    className="w-full py-2 px-4 rounded-xl border border-[#D9D2C5] hover:bg-[#F7F4EE] text-[#5A544C] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors text-center"
-                  >
-                    <Camera className="w-4 h-4 text-[#B55234]" />
-                    <span>Mode Caméra Fixe (Sans tremblement)</span>
-                  </button>
-                </>
               )}
 
               <p className="text-[11px] text-[#736D65] text-center leading-relaxed">
-                {isCameraActive
-                  ? "💡 Déplacez le plat avec le doigt, ajustez la taille, puis cliquez sur 'Fixer sur ma table' pour l'ancrer."
-                  : "💡 Utilisez 'Poser sur ma table' pour scanner votre table et y déposer le plat."}
-              </p>
-            </div>
-          ) : (
-            <div className="py-1 text-center">
-              <p className="text-xs text-[#5E5850] font-semibold">
-                💡 <strong>Vue 3D interactive :</strong> Utilisez la souris pour tourner à 360° et la molette pour zoomer.
-              </p>
-              <p className="text-[11px] text-[#8A847C] mt-1">
-                📱 Ouvrez cette page sur votre smartphone pour poser ce plat directement sur votre table en Réalité Augmentée.
+                💡 En ouvrant la caméra, vous pourrez glisser le plat avec le doigt directement sur votre table et le fixer.
               </p>
             </div>
           )}
