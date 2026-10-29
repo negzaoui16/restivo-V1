@@ -2,8 +2,10 @@
  * Custom WebXR "place on table" experience (three.js loaded lazily from esm.sh).
  *
  * Guarantees the food is ALWAYS visible from second 1:
- * - Before tap: follows the camera view or surface reticle so the user immediately sees the dish.
- * - On tap: locks (anchors) the dish firmly on the table in 6DoF space so the user can walk around it.
+ * - Uses native WebXR viewerPose for real-time camera tracking.
+ * - Before tap: follows camera sightline at ~0.65m or snaps to detected table surface.
+ * - On tap: decomposes 6DoF matrix to anchor firmly onto the physical table.
+ * - High-intensity PBR lighting & normalized pivot so the dish sits naturally on the surface.
  */
 
 const THREE_URL = "https://esm.sh/three@0.160.0";
@@ -43,7 +45,7 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
 
   log("Chargement du moteur 3D et du modèle...");
   const { THREE, gltf: loaded } = await prepareTableAR(modelUrl);
-  // Clone so the cached GLB can be reused across sessions
+  // Deep clone so the cached GLB can be reused across sessions
   const gltf = { scene: loaded.scene.clone(true) };
   log("Modèle prêt ✅ — démarrage de la session AR...");
 
@@ -71,8 +73,9 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
 
   // ---------- three.js scene ----------
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 0);
   renderer.xr.enabled = true;
   renderer.domElement.style.cssText = "position:fixed;inset:0;z-index:2147483000;";
   document.body.appendChild(renderer.domElement);
@@ -80,53 +83,71 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
 
-  // Bright, appetizing lighting
-  scene.add(new THREE.AmbientLight(0xffffff, 2.5));
+  // Omnidirectional high-intensity lighting for realistic food textures
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xddeeff, 3.0));
   const sun1 = new THREE.DirectionalLight(0xffffff, 2.5);
   sun1.position.set(1, 4, 2);
   scene.add(sun1);
   const sun2 = new THREE.DirectionalLight(0xffffff, 1.5);
   sun2.position.set(-1, 2, -1);
   scene.add(sun2);
+  scene.add(new THREE.AmbientLight(0xffffff, 2.0));
 
-  // Visible green target reticle for surfaces
-  const reticle = new THREE.Group();
-  const ring = new THREE.Mesh(
+  // Visible green target reticle on detected physical planes
+  const reticle = new THREE.Mesh(
     new THREE.RingGeometry(0.10, 0.13, 32).rotateX(-Math.PI / 2),
     new THREE.MeshBasicMaterial({ color: 0x00ff88, side: THREE.DoubleSide })
   );
-  const centerDot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.02, 16).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x00ff88, side: THREE.DoubleSide })
-  );
-  reticle.add(ring);
-  reticle.add(centerDot);
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
   scene.add(reticle);
 
-  // Food Model setup
+  // Center the food mesh geometry so pivot is bottom-center (rests on table, not sunken)
   const dish = gltf.scene;
-  // Ensure all mesh parts are double-sided and well-lit
   dish.traverse((child: any) => {
     if (child.isMesh && child.material) {
       child.material.side = THREE.DoubleSide;
+      if (child.material.isMeshStandardMaterial || child.material.isMeshPhysicalMaterial) {
+        child.material.roughness = Math.min(child.material.roughness, 0.85);
+        child.material.metalness = Math.min(child.material.metalness, 0.15);
+      }
       child.material.needsUpdate = true;
     }
   });
 
-  // Calculate actual bounding box to normalize scale if needed
-  const initialBox = new THREE.Box3().setFromObject(dish);
-  const initialSize = initialBox.getSize(new THREE.Vector3());
-  const maxDim = Math.max(initialSize.x, initialSize.y, initialSize.z);
-  // Default ideal plate size ~ 28cm
-  let baseScale = maxDim > 0 ? (0.28 / maxDim) : 1;
-  let userScaleMult = 1.0;
-  dish.scale.setScalar(baseScale * userScaleMult);
+  const bbox = new THREE.Box3().setFromObject(dish);
+  const bsize = bbox.getSize(new THREE.Vector3());
+  const bcenter = bbox.getCenter(new THREE.Vector3());
+  // Center horizontally, align bottom with y=0
+  dish.position.x = -bcenter.x;
+  dish.position.z = -bcenter.z;
+  dish.position.y = -bbox.min.y;
 
-  // Dish is VISIBLE from frame 1
-  dish.visible = true;
-  scene.add(dish);
+  // Food wrapper group (anchor)
+  const dishAnchor = new THREE.Group();
+  dishAnchor.add(dish);
+
+  // Subtle warm contact indicator under the plate
+  const shadowIndicator = new THREE.Mesh(
+    new THREE.RingGeometry(0.08, 0.14, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xffaa00,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.5,
+    })
+  );
+  shadowIndicator.position.y = 0.002;
+  dishAnchor.add(shadowIndicator);
+
+  // Default plate scale ~ 28cm
+  const maxDim = Math.max(bsize.x, bsize.y, bsize.z);
+  const baseScale = maxDim > 0 ? 0.28 / maxDim : 1;
+  let userScaleMult = 1.0;
+  dishAnchor.scale.setScalar(baseScale * userScaleMult);
+
+  dishAnchor.visible = true;
+  scene.add(dishAnchor);
 
   // ---------- XR session ----------
   let session: any;
@@ -151,7 +172,25 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
   let hasEverHit = false;
   let placed = false;
 
-  setStatus("Visez votre table et touchez pour déposer le plat !");
+  setStatus("Visez votre table pour y déposer le plat !");
+
+  const pinDish = () => {
+    placed = !placed;
+    if (placed) {
+      if (reticle.visible) {
+        reticle.matrix.decompose(dishAnchor.position, dishAnchor.quaternion, dishAnchor.scale);
+        dishAnchor.scale.setScalar(baseScale * userScaleMult);
+      }
+      pinBtn.textContent = "🔓 Déplacer";
+      pinBtn.style.background = "#15803d";
+      setStatus("Plat fixé sur la table ✅ — Tournez autour pour admirer !");
+      log("Plat fixé sur la table ✅");
+    } else {
+      pinBtn.textContent = "📍 Fixer sur table";
+      pinBtn.style.background = "#B55234";
+      setStatus("Visez la table puis cliquez Fixer.");
+    }
+  };
 
   const rotateStep = Math.PI / 6;
   const onControlClick = (e: Event) => {
@@ -159,39 +198,27 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
     if (act === "close") session.end();
     if (act === "bigger") {
       userScaleMult = Math.min(3.0, userScaleMult * 1.15);
-      dish.scale.setScalar(baseScale * userScaleMult);
+      dishAnchor.scale.setScalar(baseScale * userScaleMult);
     }
     if (act === "smaller") {
       userScaleMult = Math.max(0.3, userScaleMult / 1.15);
-      dish.scale.setScalar(baseScale * userScaleMult);
+      dishAnchor.scale.setScalar(baseScale * userScaleMult);
     }
     if (act === "rotate") {
       dish.rotation.y += rotateStep;
     }
     if (act === "pin") {
-      placed = !placed;
-      if (placed) {
-        pinBtn.textContent = "🔓 Déplacer";
-        pinBtn.style.background = "#15803d";
-        setStatus("Plat fixé sur la table ✅ — Tournez autour pour admirer !");
-        log("Plat fixé sur la table ✅");
-      } else {
-        pinBtn.textContent = "📍 Fixer sur table";
-        pinBtn.style.background = "#B55234";
-        setStatus("Déplacez le téléphone vers la table puis cliquez Fixer.");
-      }
+      pinDish();
     }
   };
   overlay.addEventListener("click", onControlClick);
 
-  // Tap on screen to fix/place dish
-  session.addEventListener("select", () => {
-    placed = true;
-    pinBtn.textContent = "🔓 Déplacer";
-    pinBtn.style.background = "#15803d";
-    setStatus("Plat fixé sur la table ✅ — Tournez autour pour admirer !");
-    log("Plat fixé sur la table ✅");
+  // Native Three.js XR controller for tap gestures
+  const controller = renderer.xr.getController(0);
+  controller.addEventListener("select", () => {
+    pinDish();
   });
+  scene.add(controller);
 
   session.addEventListener("end", () => {
     renderer.setAnimationLoop(null);
@@ -230,6 +257,7 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
           if (pose) {
             reticle.visible = true;
             reticle.matrix.fromArray(pose.transform.matrix);
+            reticle.matrixWorldNeedsUpdate = true;
             foundSurface = true;
             if (!hasEverHit) {
               hasEverHit = true;
@@ -241,24 +269,31 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
         }
       }
 
-      // If dish is NOT yet pinned by user:
-      // Keep it smoothly following either the detected table surface or the camera sightline!
-      if (!placed) {
-        if (foundSurface && reticle.visible) {
-          // Snap directly on top of the physical table surface
-          dish.position.setFromMatrixPosition(reticle.matrix);
-          setStatus(`Table détectée ✅ — Touchez l'écran pour fixer « ${title} »`);
-        } else {
-          // Follow the camera sightline directly at comfortable table distance (0.7m)
-          const xrCam = renderer.xr.getCamera();
-          const camPos = new THREE.Vector3();
-          const camQuat = new THREE.Quaternion();
-          xrCam.getWorldPosition(camPos);
-          xrCam.getWorldQuaternion(camQuat);
-          // Direction the user is looking (takes full pitch into account!)
-          const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat).normalize();
-          dish.position.copy(camPos).addScaledVector(lookDir, 0.70);
-          setStatus("Visez votre table et touchez pour déposer le plat !");
+      // Live 6DoF camera tracking via native WebXR viewerPose
+      const viewerPose = frame.getViewerPose(refSpace);
+      if (viewerPose && viewerPose.views.length > 0) {
+        const view = viewerPose.views[0];
+        const vPos = view.transform.position;
+        const vOrient = view.transform.orientation;
+
+        const camPos = new THREE.Vector3(vPos.x, vPos.y, vPos.z);
+        const camQuat = new THREE.Quaternion(vOrient.x, vOrient.y, vOrient.z, vOrient.w);
+        const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat).normalize();
+
+        // If dish is NOT yet pinned by user:
+        if (!placed) {
+          if (foundSurface && reticle.visible) {
+            // Snap directly on top of physical surface
+            reticle.matrix.decompose(dishAnchor.position, dishAnchor.quaternion, dishAnchor.scale);
+            dishAnchor.scale.setScalar(baseScale * userScaleMult);
+            setStatus(`Table détectée ✅ — Touchez l'écran pour fixer « ${title} »`);
+          } else {
+            // Follow phone sightline directly at comfortable table distance (0.65m)
+            dishAnchor.position.copy(camPos).addScaledVector(lookDir, 0.65);
+            dishAnchor.quaternion.set(0, 0, 0, 1);
+            dishAnchor.scale.setScalar(baseScale * userScaleMult);
+            setStatus("Visez votre table et touchez pour déposer le plat !");
+          }
         }
       }
     }
