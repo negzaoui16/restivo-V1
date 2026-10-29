@@ -131,6 +131,28 @@ export default function MenuPage() {
     [getAccessToken, isOnline, restaurantId]
   );
 
+  // Handler de rafraîchissement au doigt (Pull-to-Refresh comme sur Facebook)
+  // Déclaré en haut du composant pour respecter strictement les Rules of Hooks
+  const handleRefreshMenu = useCallback(async () => {
+    if (!restaurantId) return;
+    const token = getAccessToken();
+    if (token && isOnline) {
+      try {
+        const tree = await apiGetMenu(token, restaurantId);
+        if (tree) {
+          setMenu(tree);
+          saveMenuToLocalCache(restaurantId, tree);
+        }
+      } catch (err) {
+        const cached = getCachedMenu(restaurantId);
+        if (cached) setMenu(cached);
+      }
+    } else {
+      const cached = getCachedMenu(restaurantId);
+      if (cached) setMenu(cached);
+    }
+  }, [restaurantId, getAccessToken, isOnline]);
+
   /**
    * CHARGEMENT INITIAL DU MENU :
    * Appelle GET /api/restaurants/[id]/menu pour récupérer les catégories et les plats.
@@ -335,27 +357,6 @@ export default function MenuPage() {
       </div>
     );
   }
-
-  // Handler de rafraîchissement au doigt (Pull-to-Refresh comme sur Facebook)
-  const handleRefreshMenu = useCallback(async () => {
-    if (!restaurantId) return;
-    const token = getAccessToken();
-    if (token && isOnline) {
-      try {
-        const tree = await apiGetMenu(token, restaurantId);
-        if (tree) {
-          setMenu(tree);
-          saveMenuToLocalCache(restaurantId, tree);
-        }
-      } catch (err) {
-        const cached = getCachedMenu(restaurantId);
-        if (cached) setMenu(cached);
-      }
-    } else {
-      const cached = getCachedMenu(restaurantId);
-      if (cached) setMenu(cached);
-    }
-  }, [restaurantId, getAccessToken, isOnline]);
 
   return (
     <PullToRefresh onRefresh={handleRefreshMenu}>
