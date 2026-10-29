@@ -11,6 +11,7 @@ import { ReservationModal } from "./_components/ReservationModal";
 import { MenuPreview } from "./restaurants/menu/_components/MenuPreview";
 import { useMainpage } from "./_components/MainpageProvider";
 import { useAuth } from "@/contexts/AuthContext";
+import { PullToRefresh } from "@/app/_components/PullToRefresh";
 import type { PublicMenu } from "@/lib/menu/types";
 import {
   CURRENT_RESERVATION,
@@ -216,8 +217,23 @@ export default function MainHomePage() {
     }
   };
 
+  const refreshExplore = async () => {
+    try {
+      const res = await fetch("/api/explore");
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.featured)) {
+        setFeaturedRestaurants(data.featured);
+        if (Array.isArray(data.nearby)) {
+          setNearbyRestaurants(data.nearby);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to refresh explore:", e);
+    }
+  };
+
   return (
-    <>
+    <PullToRefresh onRefresh={refreshExplore}>
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch mt-3">
         <div className="lg:col-span-7 flex flex-col justify-between py-1">
           <div>
@@ -334,6 +350,6 @@ export default function MainHomePage() {
           }}
         />
       )}
-    </>
+    </PullToRefresh>
   );
 }
