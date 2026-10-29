@@ -74,7 +74,7 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
   overlay.addEventListener("beforexrselect", (e) => e.preventDefault());
 
   // ---------- three.js scene ----------
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: "high-performance" });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.xr.enabled = true;
@@ -100,6 +100,14 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
   dish.visible = false;
   scene.add(dish);
   let dishScale = 1;
+
+  const marker = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.1, 0.1),
+    new THREE.MeshBasicMaterial({ color: 0xff00ff })
+  );
+  marker.visible = false;
+  scene.add(marker);
+  let framesSincePlaced = -1;
 
   // ---------- XR session ----------
   let session: any;
@@ -156,7 +164,13 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
     }
     dish.scale.setScalar(dishScale);
     dish.visible = true;
+    // Debug marker: bright unlit magenta cube above the dish. If the cube is visible but
+    // the dish is not, the problem is the model material; if neither shows, it is the device GL layer.
+    marker.position.copy(dish.position);
+    marker.position.y += 0.2;
+    marker.visible = true;
     placed = true;
+    framesSincePlaced = 0;
     setStatus("Plat posé ✅ — touchez ailleurs pour le déplacer, ⟳ pour tourner, ± pour la taille.");
   });
 
@@ -209,5 +223,18 @@ export async function startTableAR({ modelUrl, title, log, onEnd }: StartTableAR
       }
     }
     renderer.render(scene, camera);
+    if (placed && frame && framesSincePlaced >= 0) {
+      framesSincePlaced++;
+      if (framesSincePlaced === 5) {
+        const box = new THREE.Box3().setFromObject(dish);
+        const size = box.getSize(new THREE.Vector3());
+        const cam = renderer.xr.getCamera();
+        const camPos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+        log(
+          `Debug: triangles=${renderer.info.render.triangles} taille=${size.x.toFixed(2)}x${size.y.toFixed(2)}x${size.z.toFixed(2)}m distance=${camPos.distanceTo(dish.position).toFixed(2)}m`
+        );
+        framesSincePlaced = -1;
+      }
+    }
   });
 }
