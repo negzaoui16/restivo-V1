@@ -81,6 +81,43 @@ const serwist = new Serwist({
       }),
     },
 
+    // 2b. Modèles 3D (.glb) et /models/*
+    //     Strategy: CacheFirst
+    //     Crucial pour le Mode Hors-Ligne (AR & 3D). Servis depuis le cache local.
+    {
+      matcher: ({ url }: { url: URL }) =>
+        url.pathname.endsWith(".glb") ||
+        url.pathname.startsWith("/models/"),
+      handler: new CacheFirst({
+        cacheName: "restivo-3d-models",
+        plugins: [
+          {
+            cacheWillUpdate: async ({ response }) =>
+              response.status === 0 || response.status === 200
+                ? response
+                : null,
+          },
+        ],
+      }),
+    },
+
+    // 2c. Scripts tiers locaux (/vendor/* comme model-viewer.min.js)
+    //     Strategy: CacheFirst
+    {
+      matcher: ({ url }: { url: URL }) => url.pathname.startsWith("/vendor/"),
+      handler: new CacheFirst({
+        cacheName: "restivo-vendor",
+        plugins: [
+          {
+            cacheWillUpdate: async ({ response }) =>
+              response.status === 0 || response.status === 200
+                ? response
+                : null,
+          },
+        ],
+      }),
+    },
+
     // 3. API calls: /api/* (future-proofing)
     //    Strategy: NetworkFirst
     //    → Always try the network first (data must be fresh).

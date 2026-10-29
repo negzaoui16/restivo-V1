@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { X, Smartphone, Monitor, LayoutGrid, List, ArrowLeft } from "lucide-react";
+import { X, Smartphone, Monitor, LayoutGrid, List, ArrowLeft, WifiOff } from "lucide-react";
 import { RestivoGlyph } from "@/app/mainpage/_components/RestivoGlyph";
 import type { ManagedRestaurant } from "../../_context/RestaurantManagerContext";
 import type { PublicMenu, PublicMenuItem } from "@/lib/menu/types";
@@ -10,6 +10,7 @@ import { previewCategories } from "../_lib/preview";
 import { MenuPreviewIdentity } from "./MenuPreviewIdentity";
 import { MenuPreviewSection } from "./MenuPreviewSection";
 import { ARModal } from "./ARModal";
+import { useNetworkStatus } from "@/lib/offline/offline-manager";
 
 const PATTERN = "/VisualIdentity/macroPattern.png";
 
@@ -33,6 +34,7 @@ export function MenuPreview({
   const [preview3DItem, setPreview3DItem] = useState<PublicMenuItem | null>(null);
   const [deviceMode, setDeviceMode] = useState<"desktop" | "mobile">("desktop");
   const [activeViewMode, setActiveViewMode] = useState<"grid" | "list">(custom.viewMode);
+  const { isOnline } = useNetworkStatus();
 
   const accentColor = custom.theme.primaryColor;
 
@@ -77,15 +79,24 @@ export function MenuPreview({
       <div className="absolute top-3 sm:top-4 left-3 sm:left-4 right-3 sm:right-4 z-20 flex items-center justify-between pointer-events-none">
         {isClientView ? (
           <>
-            {/* Back Button for Customer */}
-            <button
-              type="button"
-              onClick={onClose}
-              className="pointer-events-auto inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full bg-white/95 hover:bg-white text-xs font-bold text-[#1A1A1A] border border-[#E8E2D7] shadow-md transition-all hover:scale-105 active:scale-95"
-            >
-              <ArrowLeft className="w-4 h-4 text-[#B55234]" />
-              <span>Retour</span>
-            </button>
+            {/* Back Button for Customer & Offline Pill */}
+            <div className="pointer-events-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full bg-white/95 hover:bg-white text-xs font-bold text-[#1A1A1A] border border-[#E8E2D7] shadow-md transition-all hover:scale-105 active:scale-95"
+              >
+                <ArrowLeft className="w-4 h-4 text-[#B55234]" />
+                <span>Retour</span>
+              </button>
+
+              {!isOnline && (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500 text-white text-[11px] font-bold shadow-md animate-in fade-in">
+                  <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                  <span>Hors-Ligne (3D & AR actives) 📴</span>
+                </div>
+              )}
+            </div>
 
             {/* View Mode Toggle + Close Button */}
             <div className="pointer-events-auto flex items-center gap-2">
@@ -204,16 +215,24 @@ export function MenuPreview({
               </div>
             </div>
 
-            {/* Close Button */}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Fermer l'aperçu du menu"
-              className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-white/95 border border-[#E8E2D7] text-xs font-semibold text-[#1A1A1A] shadow-md hover:bg-white transition-all hover:scale-105 active:scale-95"
-            >
-              <X className="w-4 h-4" />
-              <span>Fermer</span>
-            </button>
+            {/* Close Button & Offline status */}
+            <div className="pointer-events-auto flex items-center gap-2">
+              {!isOnline && (
+                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500 text-white text-[11px] font-bold shadow-md">
+                  <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                  <span>Mode Hors-Ligne 📴</span>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Fermer l'aperçu du menu"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-white/95 border border-[#E8E2D7] text-xs font-semibold text-[#1A1A1A] shadow-md hover:bg-white transition-all hover:scale-105 active:scale-95"
+              >
+                <X className="w-4 h-4" />
+                <span>Fermer</span>
+              </button>
+            </div>
           </>
         )}
       </div>

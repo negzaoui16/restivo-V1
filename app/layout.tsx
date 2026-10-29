@@ -35,9 +35,10 @@ export default function RootLayout({
           />
         )}
         <AuthProvider>{children}</AuthProvider>
+        {/* Modèle Viewer Google auto-hébergé localement dans /public/vendor pour fonctionner 100% Hors-Ligne */}
         <Script
           type="module"
-          src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"
+          src="/vendor/model-viewer.min.js"
           strategy="afterInteractive"
         />
       </body>

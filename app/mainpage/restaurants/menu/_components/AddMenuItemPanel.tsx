@@ -16,10 +16,11 @@
 
 import React, { useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, X, Sparkles, Box, Loader2, Upload } from "lucide-react";
+import { Check, ChevronDown, X, Sparkles, Box, Loader2, Upload, WifiOff } from "lucide-react";
 import type { PublicMenuCategory, PublicMenuItem } from "@/lib/menu/types";
 import { AVAILABLE_MENU_TAGS, formatDescriptionWithTags, parseDescriptionTags } from "@/lib/menu/tags";
 import { FORM_INPUT_CLASS } from "../_lib/menu-ui";
+import { LOCAL_3D_PRESETS, useNetworkStatus } from "@/lib/offline/offline-manager";
 
 function FormField({
   label,
@@ -94,21 +95,24 @@ export function AddMenuItemPanel({
   }) => void;
   onClose: () => void;
 }) {
+  // --- ÉTATS DU FORMULAIRE DU PLAT ---
   const initialParsed = parseDescriptionTags(editingItem?.description);
   const [name, setName] = useState(editingItem?.name ?? "");
   const [categoryId, setCategoryId] = useState(editingItem?.categoryId ?? categories[0]?.id ?? "");
   const [description, setDescription] = useState(initialParsed.text);
-  const [selectedTags, setSelectedTags] = useState<string[]>(initialParsed.tags);
+  const [selectedTags, setSelectedTags] = useState<string[]>(initialParsed.tags); // Tags alimentaires (Halal, Vegan...)
   const [price, setPrice] = useState(editingItem?.price?.toString() ?? "");
   const [isAvailable, setIsAvailable] = useState(editingItem?.isAvailable ?? true);
   const [isFeatured, setIsFeatured] = useState(editingItem?.isFeatured ?? false);
   const [imageUrl, setImageUrl] = useState(editingItem?.imageUrl ?? "");
-  const [model3dUrl, setModel3dUrl] = useState(editingItem?.model3dUrl ?? "");
+  const [model3dUrl, setModel3dUrl] = useState(editingItem?.model3dUrl ?? ""); // Chemin ou URL du modèle 3D .GLB
 
+  // --- ÉTATS D'UPLOAD D'IMAGE & GÉNÉRATION 3D IA ---
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
-  const [generating3D, setGenerating3D] = useState(false);
+  const [generating3D, setGenerating3D] = useState(false); // Indicateur de chargement pour Trellis AI
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const { isOnline } = useNetworkStatus();
 
   async function handleFileChange(file: File) {
     setSelectedFile(file);
@@ -169,10 +173,23 @@ export function AddMenuItemPanel({
   }
 
   /**
-   * Envoie la photo 2D au backend IA (/api/generate-3d)
-   * pour produire automatiquement un modèle 3D .GLB
+   * ==========================================================================
+   * FONCTION CLÉ : DÉCLENCHEMENT DE LA GÉNÉRATION 3D PAR IA (Trellis)
+   * ==========================================================================
+   * 1. Valide la présence d'une image source (soit fichier local, soit URL).
+   * 2. Construit un FormData multipart contenant :
+   *    - L'image binaire ou l'URL
+   *    - Le nom du plat et sa catégorie (cruciaux pour le fallback contextuel)
+   * 3. Appelle l'API interne POST /api/generate-3d.
+   * 4. Récupère l'URL publique du modèle (.glb) et met à jour l'état local model3dUrl.
+   * ==========================================================================
    */
   async function handleGenerate3D() {
+    if (!isOnline) {
+      setGenerationError("Mode Hors-Ligne actif : L'IA Cloud nécessite Internet. Choisissez un modèle 3D de la bibliothèque locale ci-dessous.");
+      return;
+    }
+
     if (!imageUrl.trim() && !selectedFile) {
       setGenerationError("Veuillez d'abord fournir une image (URL ou fichier).");
       return;
@@ -192,6 +209,7 @@ export function AddMenuItemPanel({
       const cat = categories.find((c) => c.id === categoryId);
       if (cat?.name) formData.append("category", cat.name);
 
+      // Appel à notre pipeline backend Next.js
       const res = await fetch("/api/generate-3d", {
         method: "POST",
         body: formData,
@@ -202,6 +220,7 @@ export function AddMenuItemPanel({
         throw new Error(data.error || "Échec de génération 3D.");
       }
 
+      // Stocke le lien du modèle généré (ex: /models/item-3d-...glb)
       setModel3dUrl(data.model3dUrl);
     } catch (err: any) {
       setGenerationError(err?.message || "Erreur lors de la génération 3D.");
@@ -387,18 +406,28 @@ export function AddMenuItemPanel({
               <Box className="w-4 h-4 text-[#B55234]" />
               Modèle 3D & Réalité Augmentée
             </span>
+            {!isOnline && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-200">
+                <WifiOff className="w-2.5 h-2.5" /> Hors Ligne
+              </span>
+            )}
           </div>
 
           <button
             type="button"
             onClick={handleGenerate3D}
-            disabled={generating3D || (!imageUrl.trim() && !selectedFile)}
+            disabled={generating3D || !isOnline || (!imageUrl.trim() && !selectedFile)}
             className="w-full py-2 px-3 rounded-lg bg-[#1A1A1A] hover:bg-[#333333] disabled:bg-[#D4CFC6] text-white text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm"
           >
             {generating3D ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
                 <span>Génération 3D par IA en cours...</span>
+              </>
+            ) : !isOnline ? (
+              <>
+                <WifiOff className="w-3.5 h-3.5 text-amber-500" />
+                <span>IA Cloud Indisponible Hors-Ligne</span>
               </>
             ) : (
               <>
@@ -411,6 +440,37 @@ export function AddMenuItemPanel({
           {generationError && (
             <p className="text-[11px] text-red-600 mt-2">{generationError}</p>
           )}
+
+          {/* Bibliothèque 3D Locale (Disponible 100% Hors-Ligne) */}
+          <div className="mt-3 pt-2.5 border-t border-[#E8DECF]">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-[#736D65] flex items-center gap-1">
+                <Box className="w-3.5 h-3.5 text-[#B55234]" />
+                Modèles 3D Locaux (100% Hors-Ligne)
+              </span>
+              <span className="text-[10px] text-[#A39C91]">Sélection rapide</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {LOCAL_3D_PRESETS.map((preset) => {
+                const isSelected = model3dUrl === preset.url;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => setModel3dUrl(preset.url)}
+                    className={`px-2 py-1.5 rounded-lg text-left text-[11px] font-medium border flex items-center gap-1.5 transition-all ${
+                      isSelected
+                        ? "bg-[#1A1A1A] text-white border-[#1A1A1A] shadow-sm font-bold"
+                        : "bg-white hover:bg-[#F5ECE1] text-[#1A1A1A] border-[#E8DECF]"
+                    }`}
+                  >
+                    <span>{preset.icon}</span>
+                    <span className="truncate">{preset.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           {model3dUrl && (
             <div className="mt-3 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200">

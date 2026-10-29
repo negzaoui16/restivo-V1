@@ -32,7 +32,9 @@ import {
   Plus,
   Minus,
   RotateCw,
+  WifiOff,
 } from "lucide-react";
+import { getOrCache3DModelBlob } from "@/lib/offline/offline-manager";
 
 // Web component custom element reference
 const ModelViewer = "model-viewer" as unknown as React.ElementType;
@@ -73,6 +75,11 @@ export function ARModal({
   const pinchStartDist = useRef<number | null>(null);
   const pinchStartScale = useRef(0.65);
 
+  // Offline & Local 3D Model Blob caching state
+  const [localModelBlobUrl, setLocalModelBlobUrl] = useState<string | null>(null);
+  const [isOfflineModel, setIsOfflineModel] = useState(false);
+  const [isNetworkOffline, setIsNetworkOffline] = useState(false);
+
   // Clean, @-free HTTPS model URL
   const resolvedModelUrl = React.useMemo(() => {
     if (!modelUrl) return "";
@@ -108,6 +115,36 @@ export function ARModal({
     setIsAndroidDevice(isAndroid);
     setIsMobileDevice(isMobileUA || (isTouchDevice && window.innerWidth <= 1024));
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setIsNetworkOffline(!navigator.onLine);
+
+    const onOnline = () => setIsNetworkOffline(false);
+    const onOffline = () => setIsNetworkOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!resolvedModelUrl) return;
+    let isCancelled = false;
+
+    getOrCache3DModelBlob(resolvedModelUrl).then((res) => {
+      if (isCancelled || !res) return;
+      setLocalModelBlobUrl(res.blobUrl);
+      setIsOfflineModel(res.isFromCache);
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [resolvedModelUrl]);
 
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
@@ -147,7 +184,15 @@ export function ARModal({
     };
   }, [isOpen, onClose, stopCameraStream]);
 
-  // Start live camera stream (Solution 2)
+  /**
+   * ==========================================================================
+   * GESTION DE LA CAMÉRA AR EN DIRECT (getUserMedia)
+   * ==========================================================================
+   * 1. Demande l'autorisation d'accès au capteur arrière (facingMode: environment).
+   * 2. Demande une résolution idéale Full HD (1920x1080) sans audio.
+   * 3. Attache le flux MediaStream à la balise <video> en arrière-plan.
+   * ==========================================================================
+   */
   const handleStartLiveCamera = async () => {
     setCameraError(null);
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -186,10 +231,20 @@ export function ARModal({
     }
   };
 
-  // Touch drag (1 finger) + Pinch to zoom (2 fingers)
+  /**
+   * ==========================================================================
+   * MOTEUR GESTUELLE TACTILE AR : TOUCH DRAG (1 Doigt) & PINCH-TO-ZOOM (2 Doigts)
+   * ==========================================================================
+   * - 1 Doigt : Calcule le delta de déplacement (clientX, clientY) pour positionner
+   *             le plat exactement où le client le glisse sur sa table réelle.
+   * - 2 Doigts : Calcule la distance euclidienne (Math.hypot(dx, dy)) entre les
+   *              deux doigts pour ajuster dynamiquement l'échelle (scale).
+   * ==========================================================================
+   */
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (isPinned) return;
+    if (isPinned) return; // Si verrouillé, les gestes sont désactivés
     if (e.touches.length === 1) {
+      // Démarrage du glissement (Drag)
       const t = e.touches[0];
       isDragging.current = true;
       dragStart.current = {
@@ -200,10 +255,11 @@ export function ARModal({
       };
       pinchStartDist.current = null;
     } else if (e.touches.length === 2) {
+      // Démarrage du zoom à deux doigts (Pinch)
       isDragging.current = false;
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
-      pinchStartDist.current = Math.hypot(dx, dy);
+      pinchStartDist.current = Math.hypot(dx, dy); // Distance euclidienne initiale
       pinchStartScale.current = scale;
     }
   };
@@ -211,6 +267,7 @@ export function ARModal({
   const handleTouchMove = (e: React.TouchEvent) => {
     if (isPinned) return;
     if (e.touches.length === 1 && isDragging.current) {
+      // Déplacement 1 doigt : calcule l'écart et met à jour la position X/Y
       const t = e.touches[0];
       const dx = t.clientX - dragStart.current.x;
       const dy = t.clientY - dragStart.current.y;
@@ -219,10 +276,12 @@ export function ARModal({
         y: dragStart.current.posY + dy,
       });
     } else if (e.touches.length === 2 && pinchStartDist.current !== null) {
+      // Zoom 2 doigts : compare la nouvelle distance à la distance initiale
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
       const ratio = dist / pinchStartDist.current;
+      // Borne l'échelle entre 0.25 (très petit) et 1.8 (très grand)
       const nextScale = Math.min(1.8, Math.max(0.25, pinchStartScale.current * ratio));
       setScale(Number(nextScale.toFixed(2)));
     }
@@ -274,7 +333,14 @@ export function ARModal({
               <Box className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-[#1A1A1A] line-clamp-1">{itemName}</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-[#1A1A1A] line-clamp-1">{itemName}</h3>
+                {(isNetworkOffline || isOfflineModel) && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-200">
+                    <WifiOff className="w-2.5 h-2.5" /> Hors Ligne
+                  </span>
+                )}
+              </div>
               <p className="text-[11px] text-[#736D65] flex items-center gap-1 font-medium">
                 <Sparkles className="w-3 h-3 text-amber-500" />
                 {isCameraActive ? "Réalité Augmentée · Vue Caméra en Direct" : "Vue 3D Interactive"}
@@ -345,7 +411,7 @@ export function ARModal({
           >
             <ModelViewer
               ref={viewerRef}
-              src={resolvedModelUrl}
+              src={localModelBlobUrl || resolvedModelUrl}
               poster={imageUrl ?? undefined}
               alt={`Modèle 3D de ${itemName}`}
               auto-rotate={!isCameraActive}
@@ -385,6 +451,8 @@ export function ARModal({
                 <span>
                   {isPinned
                     ? "Plat fixé sur votre table ✅"
+                    : isNetworkOffline
+                    ? "AR Hors-Ligne 📴 — Glissez pour placer le plat"
                     : "Glissez avec le doigt pour placer le plat"}
                 </span>
               </div>

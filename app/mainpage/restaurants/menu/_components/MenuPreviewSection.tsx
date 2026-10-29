@@ -85,7 +85,7 @@ function MenuPreviewCardItem({
             </p>
           )}
 
-          {/* Tags */}
+          {/* AFFICHAGE DES BADGES DIÉTÉTIQUES (Halal, Végétarien, etc.) */}
           {tags.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">
               {tags.map((tagId) => {
@@ -105,7 +105,7 @@ function MenuPreviewCardItem({
           )}
         </div>
 
-        {/* 3D / AR Button */}
+        {/* DÉCLENCHEUR DU MODAL 3D & RÉALITÉ AUGMENTÉE (Si item.model3dUrl existe) */}
         <div>
           {item.model3dUrl && onPreview3D ? (
             <button

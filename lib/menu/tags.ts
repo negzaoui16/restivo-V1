@@ -1,3 +1,24 @@
+/**
+ * ============================================================================
+ * MODULE : TAGS DIÉTÉTIQUES & GESTION DES MÉTADONNÉES (Metadata Injector)
+ * ============================================================================
+ * Fichier : lib/menu/tags.ts
+ *
+ * RÔLE CLÉ DANS LE PROJET :
+ * Ce module résout un problème architectural majeur : comment ajouter des tags
+ * alimentaires (Halal, Vegan, Sans gluten, Épicé, etc.) SANS modifier le schéma
+ * de la base de données SQL ni casser les modèles existants.
+ *
+ * STRATÉGIE (Pattern "Metadata Injection") :
+ * 1. Les tags sont encodés sous forme de commentaire HTML invisible à la fin
+ *    de la description du plat : <!-- TAGS:["halal", "spicy"] -->
+ * 2. À l'affichage, parseDescriptionTags() extrait les tags pour les rendre
+ *    sous forme de jolis badges avec icônes.
+ * 3. Tous les commentaires techniques <!-- ... --> sont nettoyés du texte visible
+ *    afin que le client ne voie qu'une description propre et soignée.
+ * ============================================================================
+ */
+
 export interface MenuTag {
   id: string;
   label: string;
@@ -5,6 +26,7 @@ export interface MenuTag {
   colorClass: string;
 }
 
+// Liste officielle des badges diététiques et allergènes supportés par Restivo
 export const AVAILABLE_MENU_TAGS: MenuTag[] = [
   { id: "vegan", label: "Végétarien", icon: "🌱", colorClass: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   { id: "spicy", label: "Épicé", icon: "🌶️", colorClass: "bg-red-50 text-red-700 border-red-200" },
@@ -14,10 +36,15 @@ export const AVAILABLE_MENU_TAGS: MenuTag[] = [
   { id: "nuts", label: "Fruits à coque", icon: "🥜", colorClass: "bg-orange-50 text-orange-700 border-orange-200" },
 ];
 
+// Expressions régulières pour détecter et extraire les métadonnées sérialisées
 const TAGS_REGEX = /<!--\s*TAGS:\s*(\[[^\]]*\])\s*-->/i;
 const META_REGEX = /<!--\s*META:\s*(\{[^}]*\})\s*-->/i;
 const ALL_HTML_COMMENTS_REGEX = /<!--[\s\S]*?-->/g;
 
+/**
+ * ENCODEUR : Fusionne le texte saisi par le restaurateur avec les tags choisis.
+ * Exemple : "Pizza sauce tomate" + ["halal"] => "Pizza sauce tomate\n<!-- TAGS:[\"halal\"] -->"
+ */
 export function formatDescriptionWithTags(description: string, tags: string[]): string {
   const clean = description.replace(ALL_HTML_COMMENTS_REGEX, "").trim();
   if (!tags || tags.length === 0) return clean;
@@ -25,6 +52,10 @@ export function formatDescriptionWithTags(description: string, tags: string[]): 
   return clean ? `${clean}\n${tagComment}` : tagComment;
 }
 
+/**
+ * DÉCODEUR : Sépare la description textuelle et la liste des tags.
+ * Garantit que les commentaires HTML ne fuitent JAMAIS dans l'interface utilisateur.
+ */
 export function parseDescriptionTags(rawDescription: string | null | undefined): {
   text: string;
   tags: string[];
@@ -35,7 +66,7 @@ export function parseDescriptionTags(rawDescription: string | null | undefined):
 
   let tags: string[] = [];
 
-  // 1. Try matching <!-- TAGS:[...] -->
+  // Étape 1 : Recherche du format standard <!-- TAGS:[...] -->
   const tagsMatch = rawDescription.match(TAGS_REGEX);
   if (tagsMatch) {
     try {
@@ -46,7 +77,7 @@ export function parseDescriptionTags(rawDescription: string | null | undefined):
     } catch {}
   }
 
-  // 2. Try matching <!-- META:{ "tags": [...] } -->
+  // Étape 2 : Recherche de fallback du format <!-- META:{ "tags": [...] } -->
   const metaMatch = rawDescription.match(META_REGEX);
   if (metaMatch && tags.length === 0) {
     try {
@@ -57,12 +88,15 @@ export function parseDescriptionTags(rawDescription: string | null | undefined):
     } catch {}
   }
 
-  // 3. Strip all HTML comments completely so internal metadata never leaks to user UI
+  // Étape 3 : Nettoyage total du texte pour retirer les balises techniques
   const text = rawDescription.replace(ALL_HTML_COMMENTS_REGEX, "").trim();
 
   return { text, tags };
 }
 
+/**
+ * Trouve la définition complète d'un tag (icône, couleur, libellé) par son identifiant
+ */
 export function getTagById(id: string): MenuTag | undefined {
   return AVAILABLE_MENU_TAGS.find((tag) => tag.id === id);
 }
