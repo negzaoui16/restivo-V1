@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import { startTableAR, prepareTableAR } from "./startTableAR";
 import {
   X,
   Box,
@@ -127,6 +128,14 @@ export function ARModal({
     }
   }, [addLog]);
 
+  // Pre-load three.js + the dish model so the AR click starts instantly
+  useEffect(() => {
+    if (!isOpen || !webxrOk || !resolvedModelUrl) return;
+    prepareTableAR(resolvedModelUrl)
+      .then(() => addLog("Moteur AR + modèle préchargés ✅"))
+      .catch((err: any) => addLog(`❌ Préchargement AR: ${err?.message || err}`));
+  }, [isOpen, webxrOk, resolvedModelUrl, addLog]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const ua = navigator.userAgent || "";
@@ -179,24 +188,19 @@ export function ARModal({
     };
   }, [isOpen, onClose, stopCameraStream]);
 
-  // 1. Explicit Test: WebXR Pur (Chrome AR inside web page)
+  // 1. Custom WebXR AR (own three.js viewer with live status, reticle and fallback placement)
   const handleTestWebXR = async () => {
-    addLog("Lancement WebXR via model-viewer...");
-    const viewer = viewerRef.current as any;
-    if (!viewer) {
-      addLog("❌ model-viewer non trouvé sur la page");
-      return;
-    }
-    if (typeof viewer.activateAR !== "function") {
-      addLog("❌ viewer.activateAR n'est pas une fonction");
-      return;
-    }
+    addLog("Lancement WebXR (viewer personnalisé)...");
     try {
-      addLog(`canActivateAR=${String(viewer.canActivateAR)} (WebXR en priorité)`);
-      await viewer.activateAR();
-      addLog("Appel activateAR() exécuté avec succès");
+      await startTableAR({
+        modelUrl: resolvedModelUrl,
+        title: itemName,
+        log: addLog,
+        onEnd: () => addLog("Retour à la page"),
+      });
     } catch (err: any) {
       addLog(`❌ Échec WebXR: ${err?.message || JSON.stringify(err)}`);
+      setArDiag(`WebXR: ${err?.message || "erreur inconnue"}`);
     }
   };
 
@@ -229,15 +233,18 @@ export function ARModal({
     arStartedRef.current = false;
     addLog("Clic 'Poser sur ma table'...");
 
-    // 1. Priority: Try WebXR directly inside Chrome (uses ARCore without launching Google App)
-    const viewer = viewerRef.current as any;
-    if (viewer && typeof viewer.activateAR === "function") {
+    // 1. Priority: our own WebXR viewer inside Chrome (ARCore, no Google app needed)
+    if (webxrOk) {
       try {
-        await viewer.activateAR();
-        addLog("activateAR() lancé");
+        await startTableAR({
+          modelUrl: resolvedModelUrl,
+          title: itemName,
+          log: addLog,
+          onEnd: () => addLog("Retour à la page"),
+        });
         return;
       } catch (err: any) {
-        addLog(`WebXR n'a pas pu démarrer: ${err?.message || err}`);
+        addLog(`❌ WebXR n'a pas pu démarrer: ${err?.message || err}`);
       }
     }
 
