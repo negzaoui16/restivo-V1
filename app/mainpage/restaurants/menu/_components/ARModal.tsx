@@ -491,10 +491,6 @@ export function ARModal({
               shadow-intensity={isCameraActive ? "2.2" : "1.2"}
               shadow-softness="0.5"
               touch-action={isCameraActive ? "none" : "pan-y"}
-              ar={true}
-              ar-modes="webxr scene-viewer quick-look"
-              ar-placement="floor"
-              ar-scale="auto"
               style={{
                 width: "100%",
                 height: "100%",
@@ -502,16 +498,7 @@ export function ARModal({
                 backgroundColor: "transparent",
                 outline: "none",
               }}
-            >
-              {/* Native slot for WebXR devices */}
-              <button
-                slot="ar-button"
-                className="absolute top-4 right-4 py-2 px-3.5 rounded-full bg-black/60 hover:bg-black/80 text-white text-[11px] font-semibold backdrop-blur-md shadow-md flex items-center gap-1.5 transition-transform hover:scale-105"
-              >
-                <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-                <span>WebXR AR</span>
-              </button>
-            </ModelViewer>
+            />
           </div>
 
           {/* Camera AR HUD Overlay Status */}
