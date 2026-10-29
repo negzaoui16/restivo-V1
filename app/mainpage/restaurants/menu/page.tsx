@@ -46,6 +46,7 @@ import { CategoriesManager } from "./_components/CategoriesManager";
 import { PromotionsPanel } from "./_components/PromotionsPanel";
 import { MenuSettingsPanel } from "./_components/MenuSettingsPanel";
 import { MenuPreview } from "./_components/MenuPreview";
+import { PullToRefresh } from "@/app/_components/PullToRefresh";
 import {
   saveMenuToLocalCache,
   getCachedMenu,
@@ -335,8 +336,30 @@ export default function MenuPage() {
     );
   }
 
+  // Handler de rafraîchissement au doigt (Pull-to-Refresh comme sur Facebook)
+  const handleRefreshMenu = useCallback(async () => {
+    if (!restaurantId) return;
+    const token = getAccessToken();
+    if (token && isOnline) {
+      try {
+        const tree = await apiGetMenu(token, restaurantId);
+        if (tree) {
+          setMenu(tree);
+          saveMenuToLocalCache(restaurantId, tree);
+        }
+      } catch (err) {
+        const cached = getCachedMenu(restaurantId);
+        if (cached) setMenu(cached);
+      }
+    } else {
+      const cached = getCachedMenu(restaurantId);
+      if (cached) setMenu(cached);
+    }
+  }, [restaurantId, getAccessToken, isOnline]);
+
   return (
-    <div className="flex flex-col gap-0 select-none animate-in fade-in duration-300">
+    <PullToRefresh onRefresh={handleRefreshMenu}>
+      <div className="flex flex-col gap-0 select-none animate-in fade-in duration-300">
       <MenuHeader
         title={menu.name}
         isPublished={menu.isPublished}
@@ -551,5 +574,6 @@ export default function MenuPage() {
         />
       )}
     </div>
+    </PullToRefresh>
   );
 }

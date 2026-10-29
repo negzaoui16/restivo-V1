@@ -11,6 +11,7 @@ import { MenuPreviewIdentity } from "./MenuPreviewIdentity";
 import { MenuPreviewSection } from "./MenuPreviewSection";
 import { ARModal } from "./ARModal";
 import { useNetworkStatus } from "@/lib/offline/offline-manager";
+import { PullToRefresh } from "@/app/_components/PullToRefresh";
 
 const PATTERN = "/VisualIdentity/macroPattern.png";
 
@@ -239,17 +240,18 @@ export function MenuPreview({
 
       {/* Main Preview Viewport */}
       <div className="relative h-full overflow-y-auto overscroll-contain pt-16 pb-12">
-        <div
-          className={
-            isClientView
-              ? "mx-auto w-full max-w-4xl px-3 sm:px-6 my-2 sm:my-6 transition-all duration-300"
-              : `mx-auto w-full transition-all duration-300 px-4 ${
-                  deviceMode === "mobile"
-                    ? "max-w-[430px] my-6"
-                    : "max-w-[800px]"
-                }`
-          }
-        >
+        <PullToRefresh onRefresh={async () => { await new Promise((r) => setTimeout(r, 600)); }}>
+          <div
+            className={
+              isClientView
+                ? "mx-auto w-full max-w-4xl px-3 sm:px-6 my-2 sm:my-6 transition-all duration-300"
+                : `mx-auto w-full transition-all duration-300 px-4 ${
+                    deviceMode === "mobile"
+                      ? "max-w-[430px] my-6"
+                      : "max-w-[800px]"
+                  }`
+            }
+          >
           <article
             className={
               isClientView
@@ -351,6 +353,7 @@ export function MenuPreview({
             </footer>
           </article>
         </div>
+        </PullToRefresh>
       </div>
 
       {preview3DItem && preview3DItem.model3dUrl && (
