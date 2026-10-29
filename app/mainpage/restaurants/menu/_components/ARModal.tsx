@@ -192,6 +192,7 @@ export function ARModal({
       return;
     }
     try {
+      addLog(`canActivateAR=${String(viewer.canActivateAR)} (WebXR en priorité)`);
       await viewer.activateAR();
       addLog("Appel activateAR() exécuté avec succès");
     } catch (err: any) {
@@ -484,7 +485,7 @@ export function ARModal({
               shadow-softness="0.5"
               touch-action={isCameraActive ? "none" : "pan-y"}
               ar={true}
-              ar-modes="scene-viewer webxr quick-look"
+              ar-modes="webxr scene-viewer quick-look"
               ar-placement="floor"
               ar-scale="auto"
               style={{
