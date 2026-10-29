@@ -1,5 +1,19 @@
 "use client";
 
+/**
+ * ============================================================================
+ * COMPOSANT : AddMenuItemPanel (Espace Restaurateur - Ajout & Modif Plat)
+ * ============================================================================
+ * Rôle :
+ * Panneau latéral (Drawer) permettant au restaurateur :
+ * 1. De renseigner les détails du plat (nom, prix, catégorie, description).
+ * 2. De cocher les tags diététiques (Halal, Végétarien, Sans Gluten, etc.).
+ * 3. D'uploader une photo 2D.
+ * 4. De cliquer sur "Générer le modèle 3D" pour créer un plat 3D via l'IA Trellis.
+ * 5. D'enregistrer le plat en base de données avec son URL 3D (model3dUrl).
+ * ============================================================================
+ */
+
 import React, { useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, X, Sparkles, Box, Loader2, Upload } from "lucide-react";
@@ -119,6 +133,9 @@ export function AddMenuItemPanel({
     }
   }
 
+  /**
+   * Enregistre le plat final avec ses métadonnées, photo et modèle 3D
+   */
   async function handleSave() {
     let finalImageUrl = imageUrl.trim();
 
@@ -136,6 +153,7 @@ export function AddMenuItemPanel({
       }
     }
 
+    // Formate la description en y intégrant les tags sélectionnés (Halal, Vegan...)
     const finalDescription = formatDescriptionWithTags(description, selectedTags);
 
     onSave({
@@ -150,6 +168,10 @@ export function AddMenuItemPanel({
     });
   }
 
+  /**
+   * Envoie la photo 2D au backend IA (/api/generate-3d)
+   * pour produire automatiquement un modèle 3D .GLB
+   */
   async function handleGenerate3D() {
     if (!imageUrl.trim() && !selectedFile) {
       setGenerationError("Veuillez d'abord fournir une image (URL ou fichier).");

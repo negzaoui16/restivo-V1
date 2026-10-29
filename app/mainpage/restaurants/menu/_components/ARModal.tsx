@@ -1,5 +1,24 @@
 "use client";
 
+/**
+ * ============================================================================
+ * COMPOSANT : ARModal (Espace Client - Rendu 3D & Réalité Augmentée)
+ * ============================================================================
+ * Rôle :
+ * Offre au client une expérience immersive en 2 modes :
+ * 1. Mode Vue 3D 360° :
+ *    - Utilise le composant officiel Google <model-viewer>.
+ *    - Permet de tourner autour du plat à 360° et de zoomer sur les détails.
+ * 2. Mode Réalité Augmentée Caméra (Live Camera AR) :
+ *    - Active la caméra arrière HD du smartphone (via getUserMedia).
+ *    - Incruste le plat 3D avec une ombre portée réaliste sous le plat.
+ *    - Permet au client de glisser le plat avec 1 doigt (Touch Drag).
+ *    - Permet d'ajuster l'échelle avec 2 doigts (Pinch-to-zoom) ou boutons ±.
+ *    - Permet de faire pivoter le plat (⟳ 45°).
+ *    - Permet de verrouiller le plat sur la table réelle (Bouton "Fixer").
+ * ============================================================================
+ */
+
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
   X,

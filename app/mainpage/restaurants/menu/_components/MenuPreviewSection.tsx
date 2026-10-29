@@ -1,5 +1,18 @@
 "use client";
 
+/**
+ * ============================================================================
+ * COMPOSANT : MenuPreviewSection (Espace Client - Affichage du Menu)
+ * ============================================================================
+ * Rôle :
+ * 1. Affiche les sections du menu organisées par catégories (Pizza, Burgers...).
+ * 2. Rend chaque plat sous forme de carte (Grid) ou ligne (List).
+ * 3. Affiche les badges diététiques extraits automatiquement (Halal, Vegan...).
+ * 4. Détecte si le plat possède un modèle 3D (item.model3dUrl) et affiche
+ *    le bouton interactif "📱 Voir en 3D & Réalité Augmentée".
+ * ============================================================================
+ */
+
 import React from "react";
 import { Box, Sparkles, Star } from "lucide-react";
 import type { PublicMenuCategory, PublicMenuItem } from "@/lib/menu/types";
