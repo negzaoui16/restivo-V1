@@ -14,11 +14,17 @@
  * ============================================================================
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, X, Sparkles, Box, Loader2, Upload, WifiOff } from "lucide-react";
+import { Check, ChevronDown, X, Sparkles, Box, Loader2, Upload, WifiOff, Ruler } from "lucide-react";
 import type { PublicMenuCategory, PublicMenuItem } from "@/lib/menu/types";
-import { AVAILABLE_MENU_TAGS, formatDescriptionWithTags, parseDescriptionTags } from "@/lib/menu/tags";
+import {
+  AVAILABLE_MENU_TAGS,
+  OFFICIAL_SIZE_PRESETS,
+  formatDescriptionWithTags,
+  inferOfficialSizeCm,
+  parseDescriptionTags,
+} from "@/lib/menu/tags";
 import { FORM_INPUT_CLASS } from "../_lib/menu-ui";
 import { LOCAL_3D_PRESETS, useNetworkStatus } from "@/lib/offline/offline-manager";
 
@@ -96,16 +102,30 @@ export function AddMenuItemPanel({
   onClose: () => void;
 }) {
   // --- ÉTATS DU FORMULAIRE DU PLAT ---
-  const initialParsed = parseDescriptionTags(editingItem?.description);
+  const initialCategoryName = categories.find((c) => c.id === (editingItem?.categoryId ?? categories[0]?.id))?.name;
+  const initialParsed = parseDescriptionTags(
+    editingItem?.description,
+    editingItem?.name,
+    initialCategoryName
+  );
   const [name, setName] = useState(editingItem?.name ?? "");
   const [categoryId, setCategoryId] = useState(editingItem?.categoryId ?? categories[0]?.id ?? "");
   const [description, setDescription] = useState(initialParsed.text);
   const [selectedTags, setSelectedTags] = useState<string[]>(initialParsed.tags); // Tags alimentaires (Halal, Vegan...)
+  const [sizeCm, setSizeCm] = useState<number>(initialParsed.sizeCm); // Taille officielle 1:1 en cm (ex: 12cm Burger, 30cm Pizza)
+  const [hasCustomSize, setHasCustomSize] = useState<boolean>(Boolean(editingItem?.description?.includes('"sizeCm"')));
   const [price, setPrice] = useState(editingItem?.price?.toString() ?? "");
   const [isAvailable, setIsAvailable] = useState(editingItem?.isAvailable ?? true);
   const [isFeatured, setIsFeatured] = useState(editingItem?.isFeatured ?? false);
   const [imageUrl, setImageUrl] = useState(editingItem?.imageUrl ?? "");
   const [model3dUrl, setModel3dUrl] = useState(editingItem?.model3dUrl ?? ""); // Chemin ou URL du modèle 3D .GLB
+
+  // Auto-déduction de la taille officielle 1:1 selon le nom du plat et la catégorie (sauf si modifiée manuellement)
+  useEffect(() => {
+    if (hasCustomSize) return;
+    const catName = categories.find((c) => c.id === categoryId)?.name;
+    setSizeCm(inferOfficialSizeCm(name, catName));
+  }, [name, categoryId, categories, hasCustomSize]);
 
   // --- ÉTATS D'UPLOAD D'IMAGE & GÉNÉRATION 3D IA ---
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -157,8 +177,8 @@ export function AddMenuItemPanel({
       }
     }
 
-    // Formate la description en y intégrant les tags sélectionnés (Halal, Vegan...)
-    const finalDescription = formatDescriptionWithTags(description, selectedTags);
+    // Formate la description en y intégrant les tags sélectionnés (Halal, Vegan...) et la taille officielle 1:1 en cm
+    const finalDescription = formatDescriptionWithTags(description, selectedTags, sizeCm);
 
     onSave({
       categoryId,
@@ -466,6 +486,44 @@ export function AddMenuItemPanel({
                   >
                     <span>{preset.icon}</span>
                     <span className="truncate">{preset.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Taille Officielle 1:1 en Réalité Augmentée (en cm) */}
+          <div className="mt-3 pt-2.5 border-t border-[#E8DECF]">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-[#736D65] flex items-center gap-1">
+                <Ruler className="w-3.5 h-3.5 text-[#B55234]" />
+                Taille Officielle sur Table (Échelle 1:1 AR)
+              </span>
+              <span className="text-[11px] font-extrabold text-[#B55234]">
+                📏 {sizeCm} cm
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {OFFICIAL_SIZE_PRESETS.map((preset) => {
+                const isSelected = sizeCm === preset.sizeCm;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => {
+                      setSizeCm(preset.sizeCm);
+                      setHasCustomSize(true);
+                    }}
+                    className={`px-2 py-1.5 rounded-lg text-left text-[11px] font-medium border flex items-center justify-between gap-1 transition-all ${
+                      isSelected
+                        ? "bg-[#B55234] text-white border-[#B55234] shadow-sm font-bold"
+                        : "bg-white hover:bg-[#F5ECE1] text-[#1A1A1A] border-[#E8DECF]"
+                    }`}
+                  >
+                    <span className="truncate">
+                      {preset.icon} {preset.label}
+                    </span>
+                    <span className="text-[10px] opacity-85 shrink-0">{preset.sizeCm}cm</span>
                   </button>
                 );
               })}

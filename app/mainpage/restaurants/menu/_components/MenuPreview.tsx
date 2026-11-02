@@ -363,6 +363,8 @@ export function MenuPreview({
           itemName={preview3DItem.name}
           modelUrl={preview3DItem.model3dUrl}
           imageUrl={preview3DItem.imageUrl}
+          description={preview3DItem.description}
+          categoryName={categories.find((c) => c.id === preview3DItem.categoryId)?.name}
         />
       )}
     </div>

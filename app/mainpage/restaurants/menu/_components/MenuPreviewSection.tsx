@@ -14,24 +14,30 @@
  */
 
 import React from "react";
-import { Box, Sparkles, Star } from "lucide-react";
+import { Box, Sparkles, Star, Ruler } from "lucide-react";
 import type { PublicMenuCategory, PublicMenuItem } from "@/lib/menu/types";
 import { formatMenuPrice } from "../_lib/preview";
 import { parseDescriptionTags, getTagById } from "@/lib/menu/tags";
 
 function MenuPreviewCardItem({
   item,
+  categoryName,
   currency,
   accentColor,
   onPreview3D,
 }: {
   item: PublicMenuItem;
+  categoryName?: string;
   currency: string;
   accentColor: string;
   onPreview3D?: (item: PublicMenuItem) => void;
 }) {
   const unavailable = !item.isAvailable;
-  const { text: cleanDescription, tags } = parseDescriptionTags(item.description);
+  const { text: cleanDescription, tags, sizeCm } = parseDescriptionTags(
+    item.description,
+    item.name,
+    categoryName
+  );
 
   return (
     <article
@@ -85,24 +91,26 @@ function MenuPreviewCardItem({
             </p>
           )}
 
-          {/* AFFICHAGE DES BADGES DIÉTÉTIQUES (Halal, Végétarien, etc.) */}
-          {tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {tags.map((tagId) => {
-                const tag = getTagById(tagId);
-                if (!tag) return null;
-                return (
-                  <span
-                    key={tagId}
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium border ${tag.colorClass}`}
-                  >
-                    <span>{tag.icon}</span>
-                    <span>{tag.label}</span>
-                  </span>
-                );
-              })}
-            </div>
-          )}
+          {/* AFFICHAGE DE LA TAILLE OFFICIELLE 1:1 ET DES BADGES DIÉTÉTIQUES */}
+          <div className="flex flex-wrap gap-1 mt-2">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FAF3EB] text-[#B55234] border border-[#E8D5C4]">
+              <Ruler className="w-2.5 h-2.5" />
+              <span>{sizeCm} cm</span>
+            </span>
+            {tags.map((tagId) => {
+              const tag = getTagById(tagId);
+              if (!tag) return null;
+              return (
+                <span
+                  key={tagId}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium border ${tag.colorClass}`}
+                >
+                  <span>{tag.icon}</span>
+                  <span>{tag.label}</span>
+                </span>
+              );
+            })}
+          </div>
         </div>
 
         {/* DÉCLENCHEUR DU MODAL 3D & RÉALITÉ AUGMENTÉE (Si item.model3dUrl existe) */}
@@ -114,7 +122,7 @@ function MenuPreviewCardItem({
               className="w-full py-2 px-3 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-2xs hover:scale-102 active:scale-98"
             >
               <Box className="w-4 h-4 text-purple-600" />
-              <span>📱 Voir en 3D & Réalité Augmentée</span>
+              <span>📱 Voir en 3D & AR (1:1 · {sizeCm}cm)</span>
             </button>
           ) : (
             unavailable && (
@@ -131,17 +139,23 @@ function MenuPreviewCardItem({
 
 function MenuPreviewListItem({
   item,
+  categoryName,
   currency,
   accentColor,
   onPreview3D,
 }: {
   item: PublicMenuItem;
+  categoryName?: string;
   currency: string;
   accentColor: string;
   onPreview3D?: (item: PublicMenuItem) => void;
 }) {
   const unavailable = !item.isAvailable;
-  const { text: cleanDescription, tags } = parseDescriptionTags(item.description);
+  const { text: cleanDescription, tags, sizeCm } = parseDescriptionTags(
+    item.description,
+    item.name,
+    categoryName
+  );
 
   return (
     <article
@@ -177,23 +191,25 @@ function MenuPreviewListItem({
           {cleanDescription && (
             <p className="mt-0.5 text-[13px] leading-snug text-[#736D65]">{cleanDescription}</p>
           )}
-          {tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1.5">
-              {tags.map((tagId) => {
-                const tag = getTagById(tagId);
-                if (!tag) return null;
-                return (
-                  <span
-                    key={tagId}
-                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium border ${tag.colorClass}`}
-                  >
-                    <span>{tag.icon}</span>
-                    <span>{tag.label}</span>
-                  </span>
-                );
-              })}
-            </div>
-          )}
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#FAF3EB] text-[#B55234] border border-[#E8D5C4]">
+              <Ruler className="w-2.5 h-2.5" />
+              <span>{sizeCm} cm</span>
+            </span>
+            {tags.map((tagId) => {
+              const tag = getTagById(tagId);
+              if (!tag) return null;
+              return (
+                <span
+                  key={tagId}
+                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium border ${tag.colorClass}`}
+                >
+                  <span>{tag.icon}</span>
+                  <span>{tag.label}</span>
+                </span>
+              );
+            })}
+          </div>
           {item.model3dUrl && onPreview3D && (
             <button
               type="button"
@@ -201,7 +217,7 @@ function MenuPreviewListItem({
               className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 text-xs font-semibold transition-colors shadow-2xs"
             >
               <Box className="w-3.5 h-3.5" />
-              <span>📱 Voir en 3D / AR</span>
+              <span>📱 Voir en 3D / AR ({sizeCm}cm)</span>
             </button>
           )}
           {unavailable && (
@@ -248,6 +264,7 @@ export function MenuPreviewSection({
             <MenuPreviewCardItem
               key={item.id}
               item={item}
+              categoryName={category.name}
               currency={currency}
               accentColor={accentColor}
               onPreview3D={onPreview3D}
@@ -260,6 +277,7 @@ export function MenuPreviewSection({
             <MenuPreviewListItem
               key={item.id}
               item={item}
+              categoryName={category.name}
               currency={currency}
               accentColor={accentColor}
               onPreview3D={onPreview3D}
