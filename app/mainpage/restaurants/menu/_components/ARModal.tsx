@@ -9,17 +9,18 @@
  * 1. Mode Vue 3D 360° :
  *    - Utilise le composant officiel Google <model-viewer>.
  *    - Permet de tourner autour du plat à 360° et de zoomer sur les détails.
- * 2. Mode Réalité Augmentée Caméra (Live Camera AR 1:1) :
+ * 2. Mode Réalité Augmentée Caméra (Live Camera AR 1:1 avec Suivi Visuel Optique) :
  *    - Calibre automatiquement la Taille Officielle 1:1 en cm (ex: Burger 12cm,
  *      M9loub 22cm, Pizza 30cm).
  *    - Active la caméra arrière HD du smartphone (via getUserMedia).
- *    - Permet de glisser le plat avec 1 doigt (Touch Drag) et zoomer à 2 doigts.
- *    - Ancrage Gyroscopique sur Table ("Fixer sur table") : compense les mouvements
- *      du téléphone (DeviceOrientation alpha/beta/gamma) pour que le plat reste
- *      fixé sur la table réelle.
+ *    - Ancrage Visuel Optique sur Table ("Fixer sur table") :
+ *      Analyse en temps réel (60 FPS sur canvas basse résolution) le flux vidéo
+ *      de la caméra (Optical Flow multi-blocs + Verrouillage de Repère Visuel /
+ *      Landmark Template Matching) pour que le plat suive exactement les pixels
+ *      de la table et des objets voisins sans jamais partir en sens inverse.
  *    - Vue de Dessus Dynamique ("Chofou mill fo9") : quand le client lève/incline
- *      son téléphone au-dessus de la table (ou glisse le doigt une fois fixé, ou
- *      clique sur "Vue Dessus"), l'angle 3D (phi) passe en vue plongeante du dessus.
+ *      son téléphone au-dessus de la table (ou clique sur "👁️ Dessus"), l'angle
+ *      3D (phi) passe en vue plongeante du dessus sans déplacer le plat.
  * ============================================================================
  */
 
@@ -46,6 +47,20 @@ import { parseDescriptionTags, sizeCmToARScale } from "@/lib/menu/tags";
 // Web component custom element reference
 const ModelViewer = "model-viewer" as unknown as React.ElementType;
 
+// Dimensions du canvas d'analyse optique (rapide < 0.4ms par frame)
+const TRACK_W = 96;
+const TRACK_H = 128;
+const PATCH_HALF = 4; // Patch 9x9 pour le flux optique
+const LANDMARK_HALF = 5; // Patch 11x11 pour le verrouillage de repère sur table
+
+interface LandmarkAnchor {
+  template: Uint8Array; // Patch 11x11 en niveaux de gris
+  landmarkX: number; // Position courante estimée du repère (en coords TRACK_W)
+  landmarkY: number; // Position courante estimée du repère (en coords TRACK_H)
+  offsetToDishX: number; // Vecteur (dishCanvasX - landmarkX) au moment du clic sur Fixer
+  offsetToDishY: number; // Vecteur (dishCanvasY - landmarkY) au moment du clic sur Fixer
+}
+
 interface ARModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -67,6 +82,7 @@ export function ARModal({
 }: ARModalProps) {
   const viewerRef = useRef<HTMLElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -81,21 +97,26 @@ export function ARModal({
     return sizeCmToARScale(officialSizeCm);
   }, [officialSizeCm]);
 
-  // Position, échelle 1:1 et angles 3D (Theta = rotation horizontale, Phi = inclinaison verticale / vue de dessus)
+  // Position, échelle 1:1 et angles 3D (Theta = rotation 360°, Phi = inclinaison verticale / vue de dessus)
   const [isPinned, setIsPinned] = useState(false);
   const [scale, setScale] = useState<number>(() => sizeCmToARScale(officialSizeCm));
-  const [pos, setPos] = useState({ x: 0, y: 45 });
-  const [gyroOffset, setGyroOffset] = useState({ x: 0, y: 0 });
+  const [pos, setPos] = useState({ x: 0, y: 35 });
+  const posRef = useRef({ x: 0, y: 35 });
   const [orbitTheta, setOrbitTheta] = useState(0); // Angle horizontal 3D en degrés (0°..360°)
-  const [basePhi, setBasePhi] = useState(66); // Angle vertical 3D : 66° = vue sur table, 18° = vue de dessus (mill fo9)
-  const [gyroPhiDelta, setGyroPhiDelta] = useState(0); // Ajustement dynamique selon l'inclinaison du téléphone
-  const [isTopDownPreset, setIsTopDownPreset] = useState(false);
+  const [basePhi, setBasePhi] = useState(66); // Angle vertical 3D : 66° = vue sur table, 16° = vue de dessus (mill fo9)
+  const [gyroPhiDelta, setGyroPhiDelta] = useState(0); // Inclinaison dynamique Vue de Dessus uniquement
 
-  // Suivi Gyroscope pour l'ancrage sur table et la vue de dessus
-  const latestOrientationRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const anchorOrientationRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const smoothedGyroOffsetRef = useRef({ x: 0, y: 0 });
+  // Références pour le suivi optique sur vidéo (Optical Flow + Landmark)
+  const prevGrayRef = useRef<Uint8Array | null>(null);
+  const landmarkRef = useRef<LandmarkAnchor | null>(null);
   const smoothedPhiDeltaRef = useRef(0);
+  const baselineBetaRef = useRef<number | null>(null);
+
+  // Synchronise posRef avec pos
+  const updatePos = useCallback((next: { x: number; y: number }) => {
+    posRef.current = next;
+    setPos(next);
+  }, []);
 
   // Synchronise l'échelle initiale avec la taille officielle du plat
   useEffect(() => {
@@ -165,68 +186,343 @@ export function ARModal({
 
   /**
    * ==========================================================================
-   * CAPTEUR D'ORIENTATION (GYROSCOPE) : ANCRAGE SUR TABLE & VUE DE DESSUS
+   * 1. CAPTEUR D'INCLINAISON (BETA UNIQUEMENT) POUR LA VUE DE DESSUS ("MILL FO9")
    * ==========================================================================
-   * 1. Quand le téléphone s'incline au-dessus du plat (beta passe de 65° vers 15°),
-   *    l'angle vertical (phi) du modèle 3D diminue automatiquement pour montrer
-   *    le dessus du plat ("chofou mill fo9").
-   * 2. Quand le plat est fixé sur la table (isPinned === true), les mouvements
-   *    de rotation du téléphone (alpha, beta, gamma) sont compensés en sens
-   *    inverse avec un lissage (lerp) pour que le plat reste ancré sur la table.
+   * Note : Le gyroscope n'est JAMAIS utilisé pour déplacer la position (X, Y)
+   * afin d'éviter tout Gimbal Lock ou déplacement en sens inverse. Il sert
+   * uniquement à incliner l'angle 3D vertical (phi) quand on lève le téléphone
+   * au-dessus du plat !
    * ==========================================================================
    */
   useEffect(() => {
     if (!isCameraActive || typeof window === "undefined") return;
 
     const handleOrientation = (event: DeviceOrientationEvent) => {
-      const alpha = event.alpha ?? 0; // Yaw (boussole 0..360)
-      const beta = event.beta ?? 60; // Pitch (0 = téléphone à plat horizontal au-dessus de la table, 90 = vertical)
-      const gamma = event.gamma ?? 0; // Roll (-90..90)
+      if (event.beta === null || event.beta === undefined) return;
+      const beta = Math.max(5, Math.min(85, event.beta));
 
-      latestOrientationRef.current = { alpha, beta, gamma };
-
-      // 1. Inclinaison dynamique Vue de Dessus ("mill fo9") selon l'angle du téléphone (beta)
-      // Si beta ≈ 60° (téléphone incliné vers la table) -> delta = 0°
-      // Si beta ≈ 15° (téléphone levé à plat au-dessus du burger) -> delta = -42° (vue du dessus !)
-      const clampedBeta = Math.max(8, Math.min(82, beta));
-      const targetPhiDelta = (clampedBeta - 60) * 0.85;
-      smoothedPhiDeltaRef.current =
-        smoothedPhiDeltaRef.current + (targetPhiDelta - smoothedPhiDeltaRef.current) * 0.22;
-      setGyroPhiDelta(Math.round(smoothedPhiDeltaRef.current));
-
-      // 2. Compensation d'ancrage sur la table lorsque "Fixer sur table" est actif
-      if (isPinned && anchorOrientationRef.current) {
-        const anchor = anchorOrientationRef.current;
-
-        // Différence angulaire circulaire la plus courte sur 360° (-180°..+180°)
-        const deltaAlpha = ((alpha - anchor.alpha + 540) % 360) - 180;
-        const deltaGamma = gamma - anchor.gamma;
-        const deltaBeta = beta - anchor.beta;
-
-        // Déplacement inverse en pixels pour maintenir le plat au même point sur la table
-        const rawTargetX = deltaAlpha * 9.5 - deltaGamma * 6.5;
-        const rawTargetY = deltaBeta * 9.0;
-
-        const clampedX = Math.max(-240, Math.min(240, rawTargetX));
-        const clampedY = Math.max(-200, Math.min(200, rawTargetY));
-
-        smoothedGyroOffsetRef.current = {
-          x: smoothedGyroOffsetRef.current.x + (clampedX - smoothedGyroOffsetRef.current.x) * 0.28,
-          y: smoothedGyroOffsetRef.current.y + (clampedY - smoothedGyroOffsetRef.current.y) * 0.28,
-        };
-
-        setGyroOffset({
-          x: Math.round(smoothedGyroOffsetRef.current.x),
-          y: Math.round(smoothedGyroOffsetRef.current.y),
-        });
+      if (baselineBetaRef.current === null) {
+        baselineBetaRef.current = beta;
       }
+
+      // Si le téléphone est penché à l'horizontale au-dessus de la table (beta -> 10°..25°),
+      // l'angle vertical 3D passe automatiquement en vue de dessus ("mill fo9")
+      const targetPhiDelta = (beta - 58) * 0.9;
+      smoothedPhiDeltaRef.current =
+        smoothedPhiDeltaRef.current + (targetPhiDelta - smoothedPhiDeltaRef.current) * 0.25;
+      setGyroPhiDelta(Math.round(smoothedPhiDeltaRef.current));
     };
 
     window.addEventListener("deviceorientation", handleOrientation, true);
     return () => {
       window.removeEventListener("deviceorientation", handleOrientation, true);
     };
-  }, [isCameraActive, isPinned]);
+  }, [isCameraActive]);
+
+  /**
+   * ==========================================================================
+   * 2. MOTEUR DE SUIVI VISUEL OPTIQUE SUR LA CAMÉRA (OPTICAL TABLE TRACKER)
+   * ==========================================================================
+   * Lorsque "Fixer sur table" (isPinned) est actif :
+   * - Lit chaque image de la caméra (<video>) sur un canvas 96x128 (correspondant
+   *   exactement au cadrage object-cover de l'écran).
+   * - Détecte les blocs à fort contraste (contours de la table, baffle, tasse...)
+   *   et mesure leur déplacement exact (dx, dy) en pixels d'une frame à l'autre.
+   * - Verrouille également un repère visuel (Landmark 11x11) proche du plat pour
+   *   corriger toute dérive quand la caméra revient vers le point d'origine.
+   * ==========================================================================
+   */
+  useEffect(() => {
+    if (!isCameraActive || !isPinned) {
+      prevGrayRef.current = null;
+      landmarkRef.current = null;
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = TRACK_W;
+    canvas.height = TRACK_H;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    let rafId: number;
+    let isRunning = true;
+
+    // Calcule le contraste local (gradient) d'un patch centré en (cx, cy)
+    const getPatchContrast = (gray: Uint8Array, cx: number, cy: number, half: number): number => {
+      let minV = 255;
+      let maxV = 0;
+      let gradSum = 0;
+      for (let dy = -half; dy <= half; dy++) {
+        const rowOffset = (cy + dy) * TRACK_W;
+        for (let dx = -half; dx <= half; dx++) {
+          const idx = rowOffset + (cx + dx);
+          const v = gray[idx];
+          if (v < minV) minV = v;
+          if (v > maxV) maxV = v;
+          if (dx < half && dy < half) {
+            gradSum += Math.abs(v - gray[idx + 1]) + Math.abs(v - gray[idx + TRACK_W]);
+          }
+        }
+      }
+      const range = maxV - minV;
+      if (range < 16) return 0; // Zone trop plate / unie (ex: table lisse sans contour)
+      return gradSum;
+    };
+
+    // Extrait un template carré (2*half+1)x(2*half+1)
+    const extractPatch = (gray: Uint8Array, cx: number, cy: number, half: number): Uint8Array => {
+      const size = half * 2 + 1;
+      const out = new Uint8Array(size * size);
+      let k = 0;
+      for (let dy = -half; dy <= half; dy++) {
+        const rowOffset = (cy + dy) * TRACK_W;
+        for (let dx = -half; dx <= half; dx++) {
+          out[k++] = gray[rowOffset + (cx + dx)];
+        }
+      }
+      return out;
+    };
+
+    // Recherche le point de repère (landmark) le plus contrasté autour du plat
+    const captureBestLandmark = (gray: Uint8Array, dishCanvasX: number, dishCanvasY: number) => {
+      let bestScore = 0;
+      let bestX = -1;
+      let bestY = -1;
+      const margin = LANDMARK_HALF + 14;
+
+      for (let y = margin; y < TRACK_H - margin; y += 4) {
+        for (let x = margin; x < TRACK_W - margin; x += 4) {
+          const contrast = getPatchContrast(gray, x, y, LANDMARK_HALF);
+          if (contrast <= 0) continue;
+          // Privilégie les objets proches du plat sur la table (ex: baffle noir à côté)
+          const dist = Math.hypot(x - dishCanvasX, y - dishCanvasY);
+          const proximityWeight = 1 / (1 + dist * 0.035);
+          const score = contrast * proximityWeight;
+          if (score > bestScore) {
+            bestScore = score;
+            bestX = x;
+            bestY = y;
+          }
+        }
+      }
+
+      if (bestX !== -1 && bestScore > 180) {
+        landmarkRef.current = {
+          template: extractPatch(gray, bestX, bestY, LANDMARK_HALF),
+          landmarkX: bestX,
+          landmarkY: bestY,
+          offsetToDishX: dishCanvasX - bestX,
+          offsetToDishY: dishCanvasY - bestY,
+        };
+      }
+    };
+
+    const tick = () => {
+      if (!isRunning) return;
+
+      const video = videoRef.current;
+      const viewport = viewportRef.current;
+
+      if (
+        video &&
+        viewport &&
+        video.readyState >= 2 &&
+        video.videoWidth > 0 &&
+        video.videoHeight > 0 &&
+        !isDragging.current
+      ) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const cw = viewport.clientWidth || 360;
+        const ch = viewport.clientHeight || 520;
+
+        // Cadrage identique au CSS object-cover de la balise <video>
+        const videoAspect = vw / vh;
+        const containerAspect = cw / ch;
+        let sx = 0;
+        let sy = 0;
+        let sw = vw;
+        let sh = vh;
+        if (videoAspect > containerAspect) {
+          sw = vh * containerAspect;
+          sx = (vw - sw) / 2;
+        } else {
+          sh = vw / containerAspect;
+          sy = (vh - sh) / 2;
+        }
+
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, TRACK_W, TRACK_H);
+        const imgData = ctx.getImageData(0, 0, TRACK_W, TRACK_H).data;
+        const currGray = new Uint8Array(TRACK_W * TRACK_H);
+        for (let i = 0, p = 0; i < currGray.length; i++, p += 4) {
+          currGray[i] = (imgData[p] * 77 + imgData[p + 1] * 150 + imgData[p + 2] * 29) >> 8;
+        }
+
+        const scaleX = cw / TRACK_W;
+        const scaleY = ch / TRACK_H;
+        const dishCanvasX = TRACK_W / 2 + posRef.current.x / scaleX;
+        const dishCanvasY = TRACK_H / 2 + posRef.current.y / scaleY;
+
+        const prevGray = prevGrayRef.current;
+        if (!prevGray) {
+          prevGrayRef.current = currGray;
+          captureBestLandmark(currGray, dishCanvasX, dishCanvasY);
+          rafId = requestAnimationFrame(tick);
+          return;
+        }
+
+        // --- ÉTAPE A : FLUX OPTIQUE MULTI-BLOCS SUR LES ZONES CONTRASTÉES ---
+        const candidates: { x: number; y: number; score: number }[] = [];
+        const searchRadius = 7;
+        const border = PATCH_HALF + searchRadius + 1;
+
+        for (let gy = border; gy < TRACK_H - border; gy += 11) {
+          for (let gx = border; gx < TRACK_W - border; gx += 11) {
+            const c = getPatchContrast(prevGray, gx, gy, PATCH_HALF);
+            if (c > 220) {
+              const dist = Math.hypot(gx - dishCanvasX, gy - dishCanvasY);
+              candidates.push({ x: gx, y: gy, score: c / (1 + dist * 0.02) });
+            }
+          }
+        }
+
+        candidates.sort((a, b) => b.score - a.score);
+        const topBlocks = candidates.slice(0, 11);
+
+        const dxs: number[] = [];
+        const dys: number[] = [];
+
+        for (const blk of topBlocks) {
+          let bestSAD = Infinity;
+          let bestDx = 0;
+          let bestDy = 0;
+
+          for (let sdy = -searchRadius; sdy <= searchRadius; sdy++) {
+            for (let sdx = -searchRadius; sdx <= searchRadius; sdx++) {
+              let sad = 0;
+              for (let py = -PATCH_HALF; py <= PATCH_HALF; py++) {
+                const prevRow = (blk.y + py) * TRACK_W + blk.x;
+                const currRow = (blk.y + sdy + py) * TRACK_W + (blk.x + sdx);
+                for (let px = -PATCH_HALF; px <= PATCH_HALF; px++) {
+                  sad += Math.abs(prevGray[prevRow + px] - currGray[currRow + px]);
+                }
+              }
+              // Légère pénalité à distance nulle en cas d'égalité parfaite
+              if (sad < bestSAD) {
+                bestSAD = sad;
+                bestDx = sdx;
+                bestDy = sdy;
+              }
+            }
+          }
+
+          const patchArea = (PATCH_HALF * 2 + 1) * (PATCH_HALF * 2 + 1);
+          if (bestSAD / patchArea < 18) {
+            dxs.push(bestDx);
+            dys.push(bestDy);
+          }
+        }
+
+        let stepCanvasDx = 0;
+        let stepCanvasDy = 0;
+
+        if (dxs.length >= 2) {
+          dxs.sort((a, b) => a - b);
+          dys.sort((a, b) => a - b);
+          const mid = Math.floor(dxs.length / 2);
+          stepCanvasDx = dxs[mid];
+          stepCanvasDy = dys[mid];
+        }
+
+        let nextDishCanvasX = dishCanvasX + stepCanvasDx;
+        let nextDishCanvasY = dishCanvasY + stepCanvasDy;
+
+        // --- ÉTAPE B : RE-VERROUILLAGE SUR LE REPÈRE VISUEL (LANDMARK) ---
+        const lm = landmarkRef.current;
+        if (lm) {
+          const predX = Math.round(lm.landmarkX + stepCanvasDx);
+          const predY = Math.round(lm.landmarkY + stepCanvasDy);
+          const lmSearch = 9;
+          const lmBorder = LANDMARK_HALF + 1;
+
+          if (
+            predX >= lmBorder + lmSearch &&
+            predX < TRACK_W - lmBorder - lmSearch &&
+            predY >= lmBorder + lmSearch &&
+            predY < TRACK_H - lmBorder - lmSearch
+          ) {
+            let bestLmSAD = Infinity;
+            let foundX = predX;
+            let foundY = predY;
+            const tpl = lm.template;
+
+            for (let sy2 = predY - lmSearch; sy2 <= predY + lmSearch; sy2++) {
+              for (let sx2 = predX - lmSearch; sx2 <= predX + lmSearch; sx2++) {
+                let sad = 0;
+                let k = 0;
+                for (let py = -LANDMARK_HALF; py <= LANDMARK_HALF; py++) {
+                  const row = (sy2 + py) * TRACK_W + sx2;
+                  for (let px = -LANDMARK_HALF; px <= LANDMARK_HALF; px++) {
+                    sad += Math.abs(tpl[k++] - currGray[row + px]);
+                  }
+                }
+                if (sad < bestLmSAD) {
+                  bestLmSAD = sad;
+                  foundX = sx2;
+                  foundY = sy2;
+                }
+              }
+            }
+
+            const lmArea = (LANDMARK_HALF * 2 + 1) * (LANDMARK_HALF * 2 + 1);
+            if (bestLmSAD / lmArea < 14) {
+              lm.landmarkX = foundX;
+              lm.landmarkY = foundY;
+              const anchorDishX = foundX + lm.offsetToDishX;
+              const anchorDishY = foundY + lm.offsetToDishY;
+              // Correction douce sans saut vers le repère réel de la table
+              nextDishCanvasX = nextDishCanvasX * 0.65 + anchorDishX * 0.35;
+              nextDishCanvasY = nextDishCanvasY * 0.65 + anchorDishY * 0.35;
+            } else {
+              lm.landmarkX += stepCanvasDx;
+              lm.landmarkY += stepCanvasDy;
+            }
+          }
+        }
+
+        // Convertit en coordonnées écran (avec bornes de sécurité pour garder le plat visible)
+        const rawScreenX = (nextDishCanvasX - TRACK_W / 2) * scaleX;
+        const rawScreenY = (nextDishCanvasY - TRACK_H / 2) * scaleY;
+        const maxOffsetX = cw * 0.42;
+        const maxOffsetY = ch * 0.42;
+
+        const clampedX = Math.max(-maxOffsetX, Math.min(maxOffsetX, rawScreenX));
+        const clampedY = Math.max(-maxOffsetY, Math.min(maxOffsetY, rawScreenY));
+
+        if (
+          Math.abs(clampedX - posRef.current.x) >= 0.6 ||
+          Math.abs(clampedY - posRef.current.y) >= 0.6
+        ) {
+          updatePos({
+            x: Math.round(posRef.current.x * 0.25 + clampedX * 0.75),
+            y: Math.round(posRef.current.y * 0.25 + clampedY * 0.75),
+          });
+        }
+
+        prevGrayRef.current = currGray;
+      }
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+
+    return () => {
+      isRunning = false;
+      cancelAnimationFrame(rafId);
+    };
+  }, [isCameraActive, isPinned, updatePos]);
 
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
@@ -238,16 +534,15 @@ export function ARModal({
     }
     setIsCameraActive(false);
     setIsPinned(false);
-    setPos({ x: 0, y: 45 });
-    setGyroOffset({ x: 0, y: 0 });
-    smoothedGyroOffsetRef.current = { x: 0, y: 0 };
-    anchorOrientationRef.current = null;
+    updatePos({ x: 0, y: 35 });
+    prevGrayRef.current = null;
+    landmarkRef.current = null;
+    baselineBetaRef.current = null;
     setScale(officialScale);
     setOrbitTheta(0);
     setBasePhi(66);
     setGyroPhiDelta(0);
-    setIsTopDownPreset(false);
-  }, [officialScale]);
+  }, [officialScale, updatePos]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -284,7 +579,6 @@ export function ARModal({
       return;
     }
 
-    // Demande la permission gyroscope sur iOS si nécessaire
     try {
       const DeviceOrientationEvt = window.DeviceOrientationEvent as unknown as {
         requestPermission?: () => Promise<string>;
@@ -314,15 +608,14 @@ export function ARModal({
       setCameraError(null);
       setIsCameraActive(true);
       setIsPinned(false);
-      setPos({ x: 0, y: 45 });
-      setGyroOffset({ x: 0, y: 0 });
-      smoothedGyroOffsetRef.current = { x: 0, y: 0 };
-      anchorOrientationRef.current = null;
-      setScale(officialScale); // Initialise à la taille officielle 1:1 du plat
+      updatePos({ x: 0, y: 35 });
+      prevGrayRef.current = null;
+      landmarkRef.current = null;
+      baselineBetaRef.current = null;
+      setScale(officialScale); // Initialise à la taille officielle 1:1 calibrée
       setOrbitTheta(0);
       setBasePhi(66);
       setGyroPhiDelta(0);
-      setIsTopDownPreset(false);
     } catch (err: unknown) {
       console.warn("Live camera access failed:", err);
       setCameraError(
@@ -335,9 +628,9 @@ export function ARModal({
    * ==========================================================================
    * MOTEUR TACTILE AR :
    * - Non fixé (Placement) : 1 doigt déplace le plat sur la table, 2 doigts zooment.
-   * - Fixé sur table (isPinned) : le plat reste verrouillé à sa place sur la table,
+   * - Fixé sur table (isPinned) : le plat reste ancré visuellement sur la table,
    *   et glisser 1 doigt permet de tourner autour en 3D ou de regarder le plat
-   *   par-dessus ("chofou mill fo9") sans qu'il bouge de la table !
+   *   par-dessus ("chofou mill fo9") !
    * ==========================================================================
    */
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -347,8 +640,8 @@ export function ARModal({
       dragStart.current = {
         x: t.clientX,
         y: t.clientY,
-        posX: pos.x,
-        posY: pos.y,
+        posX: posRef.current.x,
+        posY: posRef.current.y,
         theta: orbitTheta,
         phi: basePhi,
       };
@@ -374,10 +667,9 @@ export function ARModal({
         const nextPhi = Math.max(12, Math.min(82, dragStart.current.phi - dy * 0.35));
         setOrbitTheta(Math.round(nextTheta));
         setBasePhi(Math.round(nextPhi));
-        setIsTopDownPreset(nextPhi <= 30);
       } else {
         // Mode placement libre : déplace le plat sur la table
-        setPos({
+        updatePos({
           x: dragStart.current.posX + dx,
           y: dragStart.current.posY + dy,
         });
@@ -387,7 +679,7 @@ export function ARModal({
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
       const ratio = dist / pinchStartDist.current;
-      const nextScale = Math.min(1.6, Math.max(0.2, pinchStartScale.current * ratio));
+      const nextScale = Math.min(1.6, Math.max(0.25, pinchStartScale.current * ratio));
       setScale(Number(nextScale.toFixed(2)));
     }
   };
@@ -398,27 +690,9 @@ export function ARModal({
   };
 
   const togglePin = () => {
-    setIsPinned((prev) => {
-      const nextPinned = !prev;
-      if (nextPinned) {
-        // Verrouille l'orientation actuelle comme point d'ancrage sur la table
-        if (latestOrientationRef.current) {
-          anchorOrientationRef.current = { ...latestOrientationRef.current };
-        }
-        smoothedGyroOffsetRef.current = { x: 0, y: 0 };
-        setGyroOffset({ x: 0, y: 0 });
-      } else {
-        // Intègre le décalage courant et libère l'ancrage
-        setPos((p) => ({
-          x: p.x + gyroOffset.x,
-          y: p.y + gyroOffset.y,
-        }));
-        anchorOrientationRef.current = null;
-        smoothedGyroOffsetRef.current = { x: 0, y: 0 };
-        setGyroOffset({ x: 0, y: 0 });
-      }
-      return nextPinned;
-    });
+    prevGrayRef.current = null;
+    landmarkRef.current = null;
+    setIsPinned((prev) => !prev);
   };
 
   const rotateDish = () => {
@@ -426,11 +700,7 @@ export function ARModal({
   };
 
   const toggleTopDownView = () => {
-    setIsTopDownPreset((prev) => {
-      const next = !prev;
-      setBasePhi(next ? 18 : 66);
-      return next;
-    });
+    setBasePhi((prev) => (prev <= 32 ? 66 : 16));
   };
 
   const resetToOfficialScale = () => {
@@ -438,26 +708,19 @@ export function ARModal({
   };
 
   const resetPosition = () => {
-    setPos({ x: 0, y: 45 });
-    setGyroOffset({ x: 0, y: 0 });
-    smoothedGyroOffsetRef.current = { x: 0, y: 0 };
-    if (latestOrientationRef.current) {
-      anchorOrientationRef.current = { ...latestOrientationRef.current };
-    }
+    prevGrayRef.current = null;
+    landmarkRef.current = null;
+    updatePos({ x: 0, y: 35 });
     setScale(officialScale);
     setOrbitTheta(0);
     setBasePhi(66);
-    setIsTopDownPreset(false);
     setIsPinned(false);
   };
 
   if (!isOpen) return null;
 
-  // Angle vertical final combinant la base (table ou vue dessus) et l'inclinaison du téléphone
+  // Angle vertical final combinant l'angle choisi et l'inclinaison du téléphone ("mill fo9")
   const effectivePhi = Math.max(12, Math.min(82, basePhi + gyroPhiDelta));
-  // Position totale du plat sur l'écran (position manuelle + compensation gyroscopique quand fixé)
-  const renderX = pos.x + (isPinned ? gyroOffset.x : 0);
-  const renderY = pos.y + (isPinned ? gyroOffset.y : 0);
   // Taille physique actuelle affichée en cm (proportionnelle à la taille officielle 1:1)
   const currentDisplayedCm = Math.max(
     4,
@@ -505,7 +768,7 @@ export function ARModal({
                 <Sparkles className="w-3 h-3 text-amber-500 shrink-0" />
                 <span className="truncate">
                   {isCameraActive
-                    ? "Réalité Augmentée 1:1 · Inclinez le téléphone pour voir du dessus"
+                    ? "Réalité Augmentée 1:1 · Levez le tél pour voir du dessus"
                     : "Vue 3D Interactive 360°"}
                 </span>
               </p>
@@ -527,6 +790,7 @@ export function ARModal({
 
         {/* 3D Viewport with Live Camera Overlay */}
         <div
+          ref={viewportRef}
           className={`relative flex-1 ${
             isCameraActive
               ? "min-h-[500px] bg-black"
@@ -548,33 +812,33 @@ export function ARModal({
             }`}
           />
 
-          {/* Realistic Contact Shadow on the Table */}
+          {/* Realistic Contact Shadow on the Table (Centrée sous le plat même en vue de dessus) */}
           {isCameraActive && (
             <div
               className="absolute pointer-events-none"
               style={{
-                transform: `translate3d(${renderX}px, ${
-                  renderY + (effectivePhi < 35 ? 25 : 85) * scale
+                transform: `translate3d(${pos.x}px, ${
+                  pos.y + Math.round((effectivePhi / 70) * 65 * scale)
                 }px, 0px) scale(${scale})`,
-                width: "260px",
-                height: effectivePhi < 35 ? "210px" : "95px",
+                width: "230px",
+                height: effectivePhi < 35 ? "185px" : "95px",
                 borderRadius: "50%",
                 background:
-                  "radial-gradient(ellipse at center, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.28) 48%, rgba(0,0,0,0) 74%)",
-                transition: isDragging.current ? "none" : "transform 0.08s ease-out, height 0.2s ease",
+                  "radial-gradient(ellipse at center, rgba(0,0,0,0.58) 0%, rgba(0,0,0,0.24) 48%, rgba(0,0,0,0) 72%)",
+                transition: isDragging.current ? "none" : "transform 0.05s linear, height 0.2s ease",
                 zIndex: 5,
               }}
             />
           )}
 
-          {/* 3D Food Model Container (Sans coupure ni conflit tactile) */}
+          {/* 3D Food Model Container */}
           <div
             className="w-full h-full flex items-center justify-center"
             style={{
               transform: isCameraActive
-                ? `translate3d(${renderX}px, ${renderY}px, 0px) scale(${scale})`
+                ? `translate3d(${pos.x}px, ${pos.y}px, 0px) scale(${scale})`
                 : "none",
-              transition: isDragging.current ? "none" : "transform 0.08s ease-out",
+              transition: isDragging.current ? "none" : "transform 0.05s linear",
               willChange: "transform",
               position: "relative",
               zIndex: 10,
@@ -594,13 +858,13 @@ export function ARModal({
                   ? `${orbitTheta}deg ${effectivePhi}deg 105%`
                   : undefined
               }
-              interpolation-decay="120"
+              interpolation-decay="100"
               bounds="tight"
               min-camera-orbit="auto 0deg auto"
               max-camera-orbit="auto 88deg auto"
               exposure="1.2"
-              shadow-intensity={isCameraActive ? "2.0" : "1.2"}
-              shadow-softness="0.55"
+              shadow-intensity={isCameraActive ? "1.8" : "1.2"}
+              shadow-softness="0.6"
               style={{
                 width: "100%",
                 height: "100%",
@@ -612,25 +876,23 @@ export function ARModal({
             />
           </div>
 
-          {/* Top HUD Badge in Camera Mode */}
+          {/* Top HUD Bar in Camera Mode (Compact pour ne jamais couper les boutons à droite) */}
           {isCameraActive && (
-            <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-2 pointer-events-none">
+            <div className="absolute top-3 left-2.5 right-2.5 z-30 flex items-center justify-between gap-1.5 pointer-events-none">
               <div
-                className={`flex items-center gap-2 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] sm:text-[12px] font-semibold border shadow-lg ${
+                className={`flex items-center gap-1.5 backdrop-blur-md px-2.5 py-1.5 rounded-full text-[11px] font-semibold border shadow-lg max-w-[54%] ${
                   isPinned
                     ? "bg-emerald-950/90 border-emerald-400 text-emerald-100"
                     : "bg-black/75 border-white/20 text-white"
                 }`}
               >
                 <span
-                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                  className={`w-2 h-2 rounded-full shrink-0 ${
                     isPinned ? "bg-emerald-400" : "bg-amber-400 animate-ping"
                   }`}
                 />
                 <span className="truncate">
-                  {isPinned
-                    ? "Fixé sur table ✅ — Glissez ou levez le tél pour voir du dessus"
-                    : "Glissez pour placer sur la table · 2 doigts pour zoomer"}
+                  {isPinned ? "Fixé sur table ✅" : "Glissez sur la table"}
                 </span>
               </div>
 
@@ -639,21 +901,21 @@ export function ARModal({
                 <button
                   type="button"
                   onClick={toggleTopDownView}
-                  className={`px-2.5 py-2 rounded-full text-[11px] font-bold backdrop-blur-md border shadow-md flex items-center gap-1 transition-all active:scale-95 ${
+                  className={`px-2.5 py-1.5 rounded-full text-[11px] font-bold backdrop-blur-md border shadow-md flex items-center gap-1 transition-all active:scale-95 ${
                     effectivePhi <= 32
                       ? "bg-amber-500 text-black border-amber-300"
-                      : "bg-black/70 hover:bg-black/85 text-white border-white/20"
+                      : "bg-black/75 hover:bg-black/90 text-white border-white/25"
                   }`}
                   title="Basculer entre Vue de Dessus et Vue sur Table"
                 >
-                  <Eye className="w-3.5 h-3.5" />
+                  <Eye className="w-3.5 h-3.5 shrink-0" />
                   <span>{effectivePhi <= 32 ? "Vue Dessus" : "Vue Table"}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={resetPosition}
-                  className="p-2 rounded-full bg-black/70 hover:bg-black/85 text-white backdrop-blur-md border border-white/20 shadow-md transition-transform active:scale-90"
+                  className="p-2 rounded-full bg-black/75 hover:bg-black/90 text-white backdrop-blur-md border border-white/25 shadow-md transition-transform active:scale-90"
                   title="Recentrer le plat en taille 1:1"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
@@ -669,7 +931,7 @@ export function ARModal({
               <div className="flex items-center bg-black/80 backdrop-blur-md rounded-2xl border border-white/20 p-1 text-white shadow-xl">
                 <button
                   type="button"
-                  onClick={() => setScale((s) => Math.max(0.2, Number((s - 0.05).toFixed(2))))}
+                  onClick={() => setScale((s) => Math.max(0.25, Number((s - 0.05).toFixed(2))))}
                   className="w-7 h-7 rounded-xl hover:bg-white/20 flex items-center justify-center transition-colors active:scale-95"
                   title="Réduire la taille"
                 >

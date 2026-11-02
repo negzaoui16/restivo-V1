@@ -142,12 +142,16 @@ export function inferOfficialSizeCm(
 
 /**
  * Calcule le facteur d'échelle AR (scale) 1:1 sur la table à partir de la taille en cm.
- * Référence optique : à ~50 cm de distance de la table, le champ de vision correspond à ~38 cm.
+ * Calibré pour une distance naturelle smartphone-table (~40 cm) :
+ * - Burger 12 cm -> scale ≈ 0.50
+ * - M9loub / Sandwich 22 cm -> scale ≈ 0.73
+ * - Assiette 24 cm -> scale ≈ 0.78
+ * - Pizza 30 cm -> scale ≈ 0.92
  */
 export function sizeCmToARScale(sizeCm: number): number {
   const clampedCm = Math.min(42, Math.max(6, sizeCm));
-  const rawScale = clampedCm / 38;
-  return Number(Math.min(0.95, Math.max(0.22, rawScale)).toFixed(2));
+  const rawScale = 0.22 + clampedCm * 0.0235;
+  return Number(Math.min(1.15, Math.max(0.35, rawScale)).toFixed(2));
 }
 
 /**
