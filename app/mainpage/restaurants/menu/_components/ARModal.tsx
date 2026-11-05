@@ -47,18 +47,50 @@ import { parseDescriptionTags, sizeCmToARScale } from "@/lib/menu/tags";
 // Web component custom element reference
 const ModelViewer = "model-viewer" as unknown as React.ElementType;
 
-// Dimensions du canvas d'analyse optique (rapide < 0.4ms par frame)
-const TRACK_W = 96;
-const TRACK_H = 128;
-const PATCH_HALF = 4; // Patch 9x9 pour le flux optique
-const LANDMARK_HALF = 5; // Patch 11x11 pour le verrouillage de repère sur table
+// --- Mathématiques 3D : orientation du téléphone -> matrice de rotation (norme W3C Z-X'-Y'') ---
+type Vec3 = [number, number, number];
+type Mat3 = [number, number, number, number, number, number, number, number, number];
 
-interface LandmarkAnchor {
-  template: Uint8Array; // Patch 11x11 en niveaux de gris
-  landmarkX: number; // Position courante estimée du repère (en coords TRACK_W)
-  landmarkY: number; // Position courante estimée du repère (en coords TRACK_H)
-  offsetToDishX: number; // Vecteur (dishCanvasX - landmarkX) au moment du clic sur Fixer
-  offsetToDishY: number; // Vecteur (dishCanvasY - landmarkY) au moment du clic sur Fixer
+function rotationFromEuler(alphaDeg: number, betaDeg: number, gammaDeg: number): Mat3 {
+  const d = Math.PI / 180;
+  const ca = Math.cos(alphaDeg * d);
+  const sa = Math.sin(alphaDeg * d);
+  const cb = Math.cos(betaDeg * d);
+  const sb = Math.sin(betaDeg * d);
+  const cg = Math.cos(gammaDeg * d);
+  const sg = Math.sin(gammaDeg * d);
+  // R = Rz(alpha) * Rx(beta) * Ry(gamma)
+  const r0: Vec3 = [cg, 0, sg];
+  const r1: Vec3 = [sb * sg, cb, -sb * cg];
+  const r2: Vec3 = [-cb * sg, sb, cb * cg];
+  return [
+    ca * r0[0] - sa * r1[0], ca * r0[1] - sa * r1[1], ca * r0[2] - sa * r1[2],
+    sa * r0[0] + ca * r1[0], sa * r0[1] + ca * r1[1], sa * r0[2] + ca * r1[2],
+    r2[0], r2[1], r2[2],
+  ];
+}
+
+// appareil -> monde
+function mulVec(R: Mat3, v: Vec3): Vec3 {
+  return [
+    R[0] * v[0] + R[1] * v[1] + R[2] * v[2],
+    R[3] * v[0] + R[4] * v[1] + R[5] * v[2],
+    R[6] * v[0] + R[7] * v[1] + R[8] * v[2],
+  ];
+}
+
+// monde -> appareil (transposée)
+function mulVecT(R: Mat3, v: Vec3): Vec3 {
+  return [
+    R[0] * v[0] + R[3] * v[1] + R[6] * v[2],
+    R[1] * v[0] + R[4] * v[1] + R[7] * v[2],
+    R[2] * v[0] + R[5] * v[1] + R[8] * v[2],
+  ];
+}
+
+interface TableAnchor {
+  dWorld: Vec3; // Direction 3D fixe du plat dans le repère du monde
+  heading0: number; // Cap (azimut) de la caméra au moment de la fixation
 }
 
 interface ARModalProps {
@@ -104,13 +136,16 @@ export function ARModal({
   const posRef = useRef({ x: 0, y: 35 });
   const [orbitTheta, setOrbitTheta] = useState(0); // Angle horizontal 3D en degrés (0°..360°)
   const [basePhi, setBasePhi] = useState(66); // Angle vertical 3D : 66° = vue sur table, 16° = vue de dessus (mill fo9)
-  const [gyroPhiDelta, setGyroPhiDelta] = useState(0); // Inclinaison dynamique Vue de Dessus uniquement
+  const [gyroPhiDelta, setGyroPhiDelta] = useState(0); // Inclinaison dynamique Vue de Dessus (mode placement)
+  const [sensorAnchored, setSensorAnchored] = useState(false); // true si l'ancrage 3D par capteur est actif
+  const [dishVisible, setDishVisible] = useState(true); // false quand la caméra regarde ailleurs que la table
+  const [anchoredView, setAnchoredView] = useState({ theta: 0, phi: 60 }); // Angles de vue 3D quand le plat est fixé
 
-  // Références pour le suivi optique sur vidéo (Optical Flow + Landmark)
-  const prevGrayRef = useRef<Uint8Array | null>(null);
-  const landmarkRef = useRef<LandmarkAnchor | null>(null);
+  // Références pour l'ancrage 3D spatial (matrice de rotation du téléphone)
+  const anchorRef = useRef<TableAnchor | null>(null);
+  const rotationRef = useRef<Mat3 | null>(null);
+  const hasSensorRef = useRef(false);
   const smoothedPhiDeltaRef = useRef(0);
-  const baselineBetaRef = useRef<number | null>(null);
 
   // Synchronise posRef avec pos
   const updatePos = useCallback((next: { x: number; y: number }) => {
@@ -186,343 +221,107 @@ export function ARModal({
 
   /**
    * ==========================================================================
-   * 1. CAPTEUR D'INCLINAISON (BETA UNIQUEMENT) POUR LA VUE DE DESSUS ("MILL FO9")
+   * ANCRAGE 3D SPATIAL (MATRICE DE ROTATION) : LE PLAT RESTE "FIXE" SUR LA TABLE
    * ==========================================================================
-   * Note : Le gyroscope n'est JAMAIS utilisé pour déplacer la position (X, Y)
-   * afin d'éviter tout Gimbal Lock ou déplacement en sens inverse. Il sert
-   * uniquement à incliner l'angle 3D vertical (phi) quand on lève le téléphone
-   * au-dessus du plat !
+   * Principe (comme une vraie AR) :
+   * 1. On convertit l'orientation du téléphone (alpha, beta, gamma) en MATRICE DE
+   *    ROTATION 3D complète (norme W3C Z-X'-Y''). Aucune soustraction d'angles
+   *    => aucun Gimbal Lock, aucun saut, aucun déplacement en sens inverse.
+   * 2. Au clic sur "Fixer sur table", on mémorise la DIRECTION 3D du plat dans le
+   *    repère du monde (vecteur unitaire) : dWorld = R * dCamera.
+   * 3. À chaque mesure du capteur, on reprojette ce vecteur fixe dans le repère
+   *    de la caméra : dCamera = R^T * dWorld => position écran (x, y) du plat.
+   *    - Si on tourne la caméra ailleurs : le plat sort de l'écran (il reste sur
+   *      la table, il ne colle plus à la caméra).
+   *    - Si on revient vers la table : il réapparaît exactement au même endroit.
+   * 4. L'angle de vue 3D du plat est calculé à partir de la même direction :
+   *    - phi (élévation) : téléphone au-dessus => vue de dessus ("mill fo9"),
+   *      téléphone à hauteur de table => vue de côté.
+   *    - theta (azimut) : en tournant autour du plat (gauche / droite) on voit
+   *      ses côtés gauche / droit, comme un vrai objet posé sur la table.
    * ==========================================================================
    */
   useEffect(() => {
     if (!isCameraActive || typeof window === "undefined") return;
 
     const handleOrientation = (event: DeviceOrientationEvent) => {
-      if (event.beta === null || event.beta === undefined) return;
-      const beta = Math.max(5, Math.min(85, event.beta));
+      if (event.alpha === null || event.beta === null || event.gamma === null) return;
+      hasSensorRef.current = true;
 
-      if (baselineBetaRef.current === null) {
-        baselineBetaRef.current = beta;
+      const R = rotationFromEuler(event.alpha, event.beta, event.gamma);
+      rotationRef.current = R;
+
+      const anchor = anchorRef.current;
+      if (!anchor) {
+        // Mode placement : seule l'inclinaison douce sert à pencher la vue 3D
+        const beta = Math.max(5, Math.min(85, event.beta));
+        const targetPhiDelta = (beta - 58) * 0.9;
+        smoothedPhiDeltaRef.current += (targetPhiDelta - smoothedPhiDeltaRef.current) * 0.25;
+        setGyroPhiDelta(Math.round(smoothedPhiDeltaRef.current));
+        return;
       }
 
-      // Si le téléphone est penché à l'horizontale au-dessus de la table (beta -> 10°..25°),
-      // l'angle vertical 3D passe automatiquement en vue de dessus ("mill fo9")
-      const targetPhiDelta = (beta - 58) * 0.9;
-      smoothedPhiDeltaRef.current =
-        smoothedPhiDeltaRef.current + (targetPhiDelta - smoothedPhiDeltaRef.current) * 0.25;
-      setGyroPhiDelta(Math.round(smoothedPhiDeltaRef.current));
+      const viewport = viewportRef.current;
+      const video = videoRef.current;
+      if (!viewport) return;
+      const cw = viewport.clientWidth || 360;
+      const ch = viewport.clientHeight || 520;
+
+      // Focale en pixels écran (champ de vision caméra arrière ~64° sur le grand côté)
+      const vw = video?.videoWidth || 1080;
+      const vh = video?.videoHeight || 1920;
+      const coverScale = Math.max(cw / vw, ch / vh);
+      const focalPx = (Math.max(vw, vh) / 2 / Math.tan((32 * Math.PI) / 180)) * coverScale;
+
+      // Direction fixe du plat (monde) -> repère caméra
+      const dCam = mulVecT(R, anchor.dWorld);
+      const inFront = dCam[2] < -0.08;
+
+      if (inFront) {
+        const rawX = (focalPx * dCam[0]) / -dCam[2];
+        const rawY = (-focalPx * dCam[1]) / -dCam[2];
+        const tx = Math.max(-2500, Math.min(2500, rawX));
+        const ty = Math.max(-2500, Math.min(2500, rawY));
+        const prev = posRef.current;
+        const nx = prev.x + (tx - prev.x) * 0.6;
+        const ny = prev.y + (ty - prev.y) * 0.6;
+        if (Math.abs(nx - prev.x) > 0.4 || Math.abs(ny - prev.y) > 0.4) {
+          updatePos({ x: Math.round(nx), y: Math.round(ny) });
+        }
+        const onScreen = Math.abs(tx) < cw * 0.72 && Math.abs(ty) < ch * 0.72;
+        setDishVisible((v) => (v === onScreen ? v : onScreen));
+      } else {
+        setDishVisible((v) => (v ? false : v));
+      }
+
+      // Angles de vue 3D du plat, calculés depuis la ligne de visée fixe
+      const elevationDeg =
+        (Math.asin(Math.max(-1, Math.min(1, -anchor.dWorld[2]))) * 180) / Math.PI;
+      // Position du téléphone par rapport au plat : on lit l'élévation de la ligne de visée
+      // réelle de la caméra (axe optique) pour que "lever le tél" => vue de dessus.
+      const camAxis = mulVec(R, [0, 0, -1]);
+      const camElevationDeg =
+        (Math.asin(Math.max(-1, Math.min(1, -camAxis[2]))) * 180) / Math.PI;
+      const viewElevation = elevationDeg * 0.35 + camElevationDeg * 0.65;
+      const phi = Math.max(12, Math.min(85, 90 - viewElevation));
+
+      const headingDeg = (Math.atan2(camAxis[0], camAxis[1]) * 180) / Math.PI;
+      let dHeading = headingDeg - anchor.heading0;
+      dHeading = ((dHeading + 540) % 360) - 180;
+      const theta = -dHeading;
+
+      setAnchoredView((prev) => {
+        const nt = Math.round(theta);
+        const np = Math.round(phi);
+        return prev.theta === nt && prev.phi === np ? prev : { theta: nt, phi: np };
+      });
     };
 
     window.addEventListener("deviceorientation", handleOrientation, true);
     return () => {
       window.removeEventListener("deviceorientation", handleOrientation, true);
     };
-  }, [isCameraActive]);
-
-  /**
-   * ==========================================================================
-   * 2. MOTEUR DE SUIVI VISUEL OPTIQUE SUR LA CAMÉRA (OPTICAL TABLE TRACKER)
-   * ==========================================================================
-   * Lorsque "Fixer sur table" (isPinned) est actif :
-   * - Lit chaque image de la caméra (<video>) sur un canvas 96x128 (correspondant
-   *   exactement au cadrage object-cover de l'écran).
-   * - Détecte les blocs à fort contraste (contours de la table, baffle, tasse...)
-   *   et mesure leur déplacement exact (dx, dy) en pixels d'une frame à l'autre.
-   * - Verrouille également un repère visuel (Landmark 11x11) proche du plat pour
-   *   corriger toute dérive quand la caméra revient vers le point d'origine.
-   * ==========================================================================
-   */
-  useEffect(() => {
-    if (!isCameraActive || !isPinned) {
-      prevGrayRef.current = null;
-      landmarkRef.current = null;
-      return;
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = TRACK_W;
-    canvas.height = TRACK_H;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return;
-
-    let rafId: number;
-    let isRunning = true;
-
-    // Calcule le contraste local (gradient) d'un patch centré en (cx, cy)
-    const getPatchContrast = (gray: Uint8Array, cx: number, cy: number, half: number): number => {
-      let minV = 255;
-      let maxV = 0;
-      let gradSum = 0;
-      for (let dy = -half; dy <= half; dy++) {
-        const rowOffset = (cy + dy) * TRACK_W;
-        for (let dx = -half; dx <= half; dx++) {
-          const idx = rowOffset + (cx + dx);
-          const v = gray[idx];
-          if (v < minV) minV = v;
-          if (v > maxV) maxV = v;
-          if (dx < half && dy < half) {
-            gradSum += Math.abs(v - gray[idx + 1]) + Math.abs(v - gray[idx + TRACK_W]);
-          }
-        }
-      }
-      const range = maxV - minV;
-      if (range < 16) return 0; // Zone trop plate / unie (ex: table lisse sans contour)
-      return gradSum;
-    };
-
-    // Extrait un template carré (2*half+1)x(2*half+1)
-    const extractPatch = (gray: Uint8Array, cx: number, cy: number, half: number): Uint8Array => {
-      const size = half * 2 + 1;
-      const out = new Uint8Array(size * size);
-      let k = 0;
-      for (let dy = -half; dy <= half; dy++) {
-        const rowOffset = (cy + dy) * TRACK_W;
-        for (let dx = -half; dx <= half; dx++) {
-          out[k++] = gray[rowOffset + (cx + dx)];
-        }
-      }
-      return out;
-    };
-
-    // Recherche le point de repère (landmark) le plus contrasté autour du plat
-    const captureBestLandmark = (gray: Uint8Array, dishCanvasX: number, dishCanvasY: number) => {
-      let bestScore = 0;
-      let bestX = -1;
-      let bestY = -1;
-      const margin = LANDMARK_HALF + 14;
-
-      for (let y = margin; y < TRACK_H - margin; y += 4) {
-        for (let x = margin; x < TRACK_W - margin; x += 4) {
-          const contrast = getPatchContrast(gray, x, y, LANDMARK_HALF);
-          if (contrast <= 0) continue;
-          // Privilégie les objets proches du plat sur la table (ex: baffle noir à côté)
-          const dist = Math.hypot(x - dishCanvasX, y - dishCanvasY);
-          const proximityWeight = 1 / (1 + dist * 0.035);
-          const score = contrast * proximityWeight;
-          if (score > bestScore) {
-            bestScore = score;
-            bestX = x;
-            bestY = y;
-          }
-        }
-      }
-
-      if (bestX !== -1 && bestScore > 180) {
-        landmarkRef.current = {
-          template: extractPatch(gray, bestX, bestY, LANDMARK_HALF),
-          landmarkX: bestX,
-          landmarkY: bestY,
-          offsetToDishX: dishCanvasX - bestX,
-          offsetToDishY: dishCanvasY - bestY,
-        };
-      }
-    };
-
-    const tick = () => {
-      if (!isRunning) return;
-
-      const video = videoRef.current;
-      const viewport = viewportRef.current;
-
-      if (
-        video &&
-        viewport &&
-        video.readyState >= 2 &&
-        video.videoWidth > 0 &&
-        video.videoHeight > 0 &&
-        !isDragging.current
-      ) {
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        const cw = viewport.clientWidth || 360;
-        const ch = viewport.clientHeight || 520;
-
-        // Cadrage identique au CSS object-cover de la balise <video>
-        const videoAspect = vw / vh;
-        const containerAspect = cw / ch;
-        let sx = 0;
-        let sy = 0;
-        let sw = vw;
-        let sh = vh;
-        if (videoAspect > containerAspect) {
-          sw = vh * containerAspect;
-          sx = (vw - sw) / 2;
-        } else {
-          sh = vw / containerAspect;
-          sy = (vh - sh) / 2;
-        }
-
-        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, TRACK_W, TRACK_H);
-        const imgData = ctx.getImageData(0, 0, TRACK_W, TRACK_H).data;
-        const currGray = new Uint8Array(TRACK_W * TRACK_H);
-        for (let i = 0, p = 0; i < currGray.length; i++, p += 4) {
-          currGray[i] = (imgData[p] * 77 + imgData[p + 1] * 150 + imgData[p + 2] * 29) >> 8;
-        }
-
-        const scaleX = cw / TRACK_W;
-        const scaleY = ch / TRACK_H;
-        const dishCanvasX = TRACK_W / 2 + posRef.current.x / scaleX;
-        const dishCanvasY = TRACK_H / 2 + posRef.current.y / scaleY;
-
-        const prevGray = prevGrayRef.current;
-        if (!prevGray) {
-          prevGrayRef.current = currGray;
-          captureBestLandmark(currGray, dishCanvasX, dishCanvasY);
-          rafId = requestAnimationFrame(tick);
-          return;
-        }
-
-        // --- ÉTAPE A : FLUX OPTIQUE MULTI-BLOCS SUR LES ZONES CONTRASTÉES ---
-        const candidates: { x: number; y: number; score: number }[] = [];
-        const searchRadius = 7;
-        const border = PATCH_HALF + searchRadius + 1;
-
-        for (let gy = border; gy < TRACK_H - border; gy += 11) {
-          for (let gx = border; gx < TRACK_W - border; gx += 11) {
-            const c = getPatchContrast(prevGray, gx, gy, PATCH_HALF);
-            if (c > 220) {
-              const dist = Math.hypot(gx - dishCanvasX, gy - dishCanvasY);
-              candidates.push({ x: gx, y: gy, score: c / (1 + dist * 0.02) });
-            }
-          }
-        }
-
-        candidates.sort((a, b) => b.score - a.score);
-        const topBlocks = candidates.slice(0, 11);
-
-        const dxs: number[] = [];
-        const dys: number[] = [];
-
-        for (const blk of topBlocks) {
-          let bestSAD = Infinity;
-          let bestDx = 0;
-          let bestDy = 0;
-
-          for (let sdy = -searchRadius; sdy <= searchRadius; sdy++) {
-            for (let sdx = -searchRadius; sdx <= searchRadius; sdx++) {
-              let sad = 0;
-              for (let py = -PATCH_HALF; py <= PATCH_HALF; py++) {
-                const prevRow = (blk.y + py) * TRACK_W + blk.x;
-                const currRow = (blk.y + sdy + py) * TRACK_W + (blk.x + sdx);
-                for (let px = -PATCH_HALF; px <= PATCH_HALF; px++) {
-                  sad += Math.abs(prevGray[prevRow + px] - currGray[currRow + px]);
-                }
-              }
-              // Légère pénalité à distance nulle en cas d'égalité parfaite
-              if (sad < bestSAD) {
-                bestSAD = sad;
-                bestDx = sdx;
-                bestDy = sdy;
-              }
-            }
-          }
-
-          const patchArea = (PATCH_HALF * 2 + 1) * (PATCH_HALF * 2 + 1);
-          if (bestSAD / patchArea < 18) {
-            dxs.push(bestDx);
-            dys.push(bestDy);
-          }
-        }
-
-        let stepCanvasDx = 0;
-        let stepCanvasDy = 0;
-
-        if (dxs.length >= 2) {
-          dxs.sort((a, b) => a - b);
-          dys.sort((a, b) => a - b);
-          const mid = Math.floor(dxs.length / 2);
-          stepCanvasDx = dxs[mid];
-          stepCanvasDy = dys[mid];
-        }
-
-        let nextDishCanvasX = dishCanvasX + stepCanvasDx;
-        let nextDishCanvasY = dishCanvasY + stepCanvasDy;
-
-        // --- ÉTAPE B : RE-VERROUILLAGE SUR LE REPÈRE VISUEL (LANDMARK) ---
-        const lm = landmarkRef.current;
-        if (lm) {
-          const predX = Math.round(lm.landmarkX + stepCanvasDx);
-          const predY = Math.round(lm.landmarkY + stepCanvasDy);
-          const lmSearch = 9;
-          const lmBorder = LANDMARK_HALF + 1;
-
-          if (
-            predX >= lmBorder + lmSearch &&
-            predX < TRACK_W - lmBorder - lmSearch &&
-            predY >= lmBorder + lmSearch &&
-            predY < TRACK_H - lmBorder - lmSearch
-          ) {
-            let bestLmSAD = Infinity;
-            let foundX = predX;
-            let foundY = predY;
-            const tpl = lm.template;
-
-            for (let sy2 = predY - lmSearch; sy2 <= predY + lmSearch; sy2++) {
-              for (let sx2 = predX - lmSearch; sx2 <= predX + lmSearch; sx2++) {
-                let sad = 0;
-                let k = 0;
-                for (let py = -LANDMARK_HALF; py <= LANDMARK_HALF; py++) {
-                  const row = (sy2 + py) * TRACK_W + sx2;
-                  for (let px = -LANDMARK_HALF; px <= LANDMARK_HALF; px++) {
-                    sad += Math.abs(tpl[k++] - currGray[row + px]);
-                  }
-                }
-                if (sad < bestLmSAD) {
-                  bestLmSAD = sad;
-                  foundX = sx2;
-                  foundY = sy2;
-                }
-              }
-            }
-
-            const lmArea = (LANDMARK_HALF * 2 + 1) * (LANDMARK_HALF * 2 + 1);
-            if (bestLmSAD / lmArea < 14) {
-              lm.landmarkX = foundX;
-              lm.landmarkY = foundY;
-              const anchorDishX = foundX + lm.offsetToDishX;
-              const anchorDishY = foundY + lm.offsetToDishY;
-              // Correction douce sans saut vers le repère réel de la table
-              nextDishCanvasX = nextDishCanvasX * 0.65 + anchorDishX * 0.35;
-              nextDishCanvasY = nextDishCanvasY * 0.65 + anchorDishY * 0.35;
-            } else {
-              lm.landmarkX += stepCanvasDx;
-              lm.landmarkY += stepCanvasDy;
-            }
-          }
-        }
-
-        // Convertit en coordonnées écran (avec bornes de sécurité pour garder le plat visible)
-        const rawScreenX = (nextDishCanvasX - TRACK_W / 2) * scaleX;
-        const rawScreenY = (nextDishCanvasY - TRACK_H / 2) * scaleY;
-        const maxOffsetX = cw * 0.42;
-        const maxOffsetY = ch * 0.42;
-
-        const clampedX = Math.max(-maxOffsetX, Math.min(maxOffsetX, rawScreenX));
-        const clampedY = Math.max(-maxOffsetY, Math.min(maxOffsetY, rawScreenY));
-
-        if (
-          Math.abs(clampedX - posRef.current.x) >= 0.6 ||
-          Math.abs(clampedY - posRef.current.y) >= 0.6
-        ) {
-          updatePos({
-            x: Math.round(posRef.current.x * 0.25 + clampedX * 0.75),
-            y: Math.round(posRef.current.y * 0.25 + clampedY * 0.75),
-          });
-        }
-
-        prevGrayRef.current = currGray;
-      }
-
-      rafId = requestAnimationFrame(tick);
-    };
-
-    rafId = requestAnimationFrame(tick);
-
-    return () => {
-      isRunning = false;
-      cancelAnimationFrame(rafId);
-    };
-  }, [isCameraActive, isPinned, updatePos]);
+  }, [isCameraActive, updatePos]);
 
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
@@ -535,9 +334,7 @@ export function ARModal({
     setIsCameraActive(false);
     setIsPinned(false);
     updatePos({ x: 0, y: 35 });
-    prevGrayRef.current = null;
-    landmarkRef.current = null;
-    baselineBetaRef.current = null;
+    anchorRef.current = null;
     setScale(officialScale);
     setOrbitTheta(0);
     setBasePhi(66);
@@ -609,9 +406,7 @@ export function ARModal({
       setIsCameraActive(true);
       setIsPinned(false);
       updatePos({ x: 0, y: 35 });
-      prevGrayRef.current = null;
-      landmarkRef.current = null;
-      baselineBetaRef.current = null;
+    anchorRef.current = null;
       setScale(officialScale); // Initialise à la taille officielle 1:1 calibrée
       setOrbitTheta(0);
       setBasePhi(66);
@@ -690,9 +485,45 @@ export function ARModal({
   };
 
   const togglePin = () => {
-    prevGrayRef.current = null;
-    landmarkRef.current = null;
-    setIsPinned((prev) => !prev);
+    if (isPinned) {
+      // Libère le plat : il garde sa dernière position à l'écran
+      anchorRef.current = null;
+      setSensorAnchored(false);
+      setDishVisible(true);
+      setIsPinned(false);
+      return;
+    }
+
+    // Fixe le plat : on mémorise sa direction 3D dans le repère du monde
+    const R = rotationRef.current;
+    const viewport = viewportRef.current;
+    if (R && hasSensorRef.current && viewport) {
+      const video = videoRef.current;
+      const cw = viewport.clientWidth || 360;
+      const ch = viewport.clientHeight || 520;
+      const vw = video?.videoWidth || 1080;
+      const vh = video?.videoHeight || 1920;
+      const coverScale = Math.max(cw / vw, ch / vh);
+      const focalPx = (Math.max(vw, vh) / 2 / Math.tan((32 * Math.PI) / 180)) * coverScale;
+
+      const sx = posRef.current.x;
+      const sy = posRef.current.y;
+      const len = Math.hypot(sx / focalPx, sy / focalPx, 1);
+      const dCam: Vec3 = [sx / focalPx / len, -sy / focalPx / len, -1 / len];
+      const dWorld = mulVec(R, dCam);
+      const camAxis = mulVec(R, [0, 0, -1]);
+      const heading0 = (Math.atan2(camAxis[0], camAxis[1]) * 180) / Math.PI;
+      const camElev = (Math.asin(Math.max(-1, Math.min(1, -camAxis[2]))) * 180) / Math.PI;
+      anchorRef.current = { dWorld, heading0 };
+      setSensorAnchored(true);
+      setAnchoredView({ theta: 0, phi: Math.round(Math.max(12, Math.min(85, 90 - camElev))) });
+    } else {
+      // Pas de capteur (PC) : le plat reste simplement verrouillé à l'écran
+      anchorRef.current = null;
+      setSensorAnchored(false);
+    }
+    setDishVisible(true);
+    setIsPinned(true);
   };
 
   const rotateDish = () => {
@@ -708,19 +539,24 @@ export function ARModal({
   };
 
   const resetPosition = () => {
-    prevGrayRef.current = null;
-    landmarkRef.current = null;
+    anchorRef.current = null;
     updatePos({ x: 0, y: 35 });
     setScale(officialScale);
     setOrbitTheta(0);
     setBasePhi(66);
     setIsPinned(false);
+    setSensorAnchored(false);
+    setDishVisible(true);
   };
 
   if (!isOpen) return null;
 
   // Angle vertical final combinant l'angle choisi et l'inclinaison du téléphone ("mill fo9")
-  const effectivePhi = Math.max(12, Math.min(82, basePhi + gyroPhiDelta));
+  const hasAnchor = isPinned && sensorAnchored;
+  const effectivePhi = hasAnchor
+    ? Math.max(12, Math.min(85, anchoredView.phi + (basePhi - 66)))
+    : Math.max(12, Math.min(82, basePhi + (isPinned ? 0 : gyroPhiDelta)));
+  const effectiveTheta = hasAnchor ? orbitTheta + anchoredView.theta : orbitTheta;
   // Taille physique actuelle affichée en cm (proportionnelle à la taille officielle 1:1)
   const currentDisplayedCm = Math.max(
     4,
@@ -827,6 +663,7 @@ export function ARModal({
                   "radial-gradient(ellipse at center, rgba(0,0,0,0.58) 0%, rgba(0,0,0,0.24) 48%, rgba(0,0,0,0) 72%)",
                 transition: isDragging.current ? "none" : "transform 0.05s linear, height 0.2s ease",
                 zIndex: 5,
+                opacity: dishVisible ? 1 : 0,
               }}
             />
           )}
@@ -843,6 +680,7 @@ export function ARModal({
               position: "relative",
               zIndex: 10,
               pointerEvents: isCameraActive ? "none" : "auto",
+              opacity: !isCameraActive || dishVisible ? 1 : 0,
             }}
           >
             <ModelViewer
@@ -855,7 +693,7 @@ export function ARModal({
               interaction-prompt="none"
               camera-orbit={
                 isCameraActive
-                  ? `${orbitTheta}deg ${effectivePhi}deg 105%`
+                  ? `${effectiveTheta}deg ${effectivePhi}deg 105%`
                   : undefined
               }
               interpolation-decay="100"
