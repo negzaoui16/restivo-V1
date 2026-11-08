@@ -89,8 +89,11 @@ function mulVecT(R: Mat3, v: Vec3): Vec3 {
 }
 
 interface TableAnchor {
-  dWorld: Vec3; // Direction 3D fixe du plat dans le repère du monde
-  heading0: number; // Cap (azimut) de la caméra au moment de la fixation
+  dWorld: Vec3; // Direction 3D fixe du plat dans le repère horizontal de la table
+  alpha0: number; // Cap initial (alpha) au moment de la fixation
+  beta0: number; // Inclinaison initiale (beta) au moment de la fixation
+  gamma0: number; // Roulis initial (gamma) au moment de la fixation
+  stabilizedAlpha: number; // Cap stabilisé (protégé contre le Gimbal Lock en vue de dessus)
 }
 
 interface ARModalProps {
@@ -139,11 +142,12 @@ export function ARModal({
   const [gyroPhiDelta, setGyroPhiDelta] = useState(0); // Inclinaison dynamique Vue de Dessus (mode placement)
   const [sensorAnchored, setSensorAnchored] = useState(false); // true si l'ancrage 3D par capteur est actif
   const [dishVisible, setDishVisible] = useState(true); // false quand la caméra regarde ailleurs que la table
-  const [anchoredView, setAnchoredView] = useState({ theta: 0, phi: 60 }); // Angles de vue 3D quand le plat est fixé
+  const [anchoredView, setAnchoredView] = useState({ theta: 0, phi: 58, roll: 0 }); // Angles 3D (dessus/côté/gauche/droite) quand fixé
 
   // Références pour l'ancrage 3D spatial (matrice de rotation du téléphone)
   const anchorRef = useRef<TableAnchor | null>(null);
   const rotationRef = useRef<Mat3 | null>(null);
+  const rawEulerRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const hasSensorRef = useRef(false);
   const smoothedPhiDeltaRef = useRef(0);
 
@@ -247,6 +251,11 @@ export function ARModal({
     const handleOrientation = (event: DeviceOrientationEvent) => {
       if (event.alpha === null || event.beta === null || event.gamma === null) return;
       hasSensorRef.current = true;
+      rawEulerRef.current = {
+        alpha: event.alpha,
+        beta: event.beta,
+        gamma: event.gamma,
+      };
 
       const R = rotationFromEuler(event.alpha, event.beta, event.gamma);
       rotationRef.current = R;
@@ -273,9 +282,35 @@ export function ARModal({
       const coverScale = Math.max(cw / vw, ch / vh);
       const focalPx = (Math.max(vw, vh) / 2 / Math.tan((32 * Math.PI) / 180)) * coverScale;
 
-      // Direction fixe du plat (monde) -> repère caméra
-      const dCam = mulVecT(R, anchor.dWorld);
-      const inFront = dCam[2] < -0.08;
+      // 1. Stabilisation du cap horizontal (alpha) :
+      // Quand on lève le téléphone à plat au-dessus du plat (beta < 35° pour voir "mill fo9")
+      // ou qu'on penche fort le poignet sur le côté (|gamma| > 25° pour voir gauche/droite),
+      // on fige progressivement alpha pour empêcher tout saut de boussole (Gimbal Lock).
+      const absGamma = Math.abs(event.gamma);
+      const pitchWeight = Math.max(0, Math.min(1, (event.beta - 26) / 22));
+      const rollWeight = Math.max(0, Math.min(1, (38 - absGamma) / 20));
+      const alphaTrust = pitchWeight * rollWeight;
+
+      let deltaAlphaStep = ((event.alpha - anchor.stabilizedAlpha + 540) % 360) - 180;
+      // Ignore les sauts brusques parasites de boussole quand le téléphone est incliné
+      if (Math.abs(deltaAlphaStep) > 45 && alphaTrust < 0.5) {
+        deltaAlphaStep = 0;
+      }
+      anchor.stabilizedAlpha =
+        (anchor.stabilizedAlpha + deltaAlphaStep * alphaTrust + 360) % 360;
+
+      // 2. Matrice d'ancrage sur la table (R_table) :
+      // - Suit la rotation horizontale (stabilizedAlpha) quand on tourne vers le PC portable ou la fenêtre.
+      // - Garde l'élévation verrouillée sur la table quand on lève le téléphone ("mill fo9", beta <= 78°)
+      //   pour que le burger NE MONTE JAMAIS dans les airs au-dessus de la vape/poêle !
+      // - Ignore le roulis du poignet (gamma = 0) pour que le burger NE DISPARAISSE JAMAIS
+      //   quand on incline le téléphone à gauche ou à droite (00:32 - 00:37).
+      const effectiveBetaForTable =
+        event.beta > 80 ? anchor.beta0 + (event.beta - 80) * 0.85 : anchor.beta0;
+      const R_table = rotationFromEuler(anchor.stabilizedAlpha, effectiveBetaForTable, 0);
+
+      const dCam = mulVecT(R_table, anchor.dWorld);
+      const inFront = dCam[2] < -0.12;
 
       if (inFront) {
         const rawX = (focalPx * dCam[0]) / -dCam[2];
@@ -283,37 +318,40 @@ export function ARModal({
         const tx = Math.max(-2500, Math.min(2500, rawX));
         const ty = Math.max(-2500, Math.min(2500, rawY));
         const prev = posRef.current;
-        const nx = prev.x + (tx - prev.x) * 0.6;
-        const ny = prev.y + (ty - prev.y) * 0.6;
+        const nx = prev.x + (tx - prev.x) * 0.55;
+        const ny = prev.y + (ty - prev.y) * 0.55;
         if (Math.abs(nx - prev.x) > 0.4 || Math.abs(ny - prev.y) > 0.4) {
           updatePos({ x: Math.round(nx), y: Math.round(ny) });
         }
-        const onScreen = Math.abs(tx) < cw * 0.72 && Math.abs(ty) < ch * 0.72;
+        // Le plat reste visible tant qu'il n'est pas complètement sorti du cadre (pas de disparition brusque)
+        const onScreen = Math.abs(tx) < cw * 1.15 && Math.abs(ty) < ch * 1.15;
         setDishVisible((v) => (v === onScreen ? v : onScreen));
       } else {
         setDishVisible((v) => (v ? false : v));
       }
 
-      // Angles de vue 3D du plat, calculés depuis la ligne de visée fixe
-      const elevationDeg =
-        (Math.asin(Math.max(-1, Math.min(1, -anchor.dWorld[2]))) * 180) / Math.PI;
-      // Position du téléphone par rapport au plat : on lit l'élévation de la ligne de visée
-      // réelle de la caméra (axe optique) pour que "lever le tél" => vue de dessus.
-      const camAxis = mulVec(R, [0, 0, -1]);
-      const camElevationDeg =
-        (Math.asin(Math.max(-1, Math.min(1, -camAxis[2]))) * 180) / Math.PI;
-      const viewElevation = elevationDeg * 0.35 + camElevationDeg * 0.65;
-      const phi = Math.max(12, Math.min(85, 90 - viewElevation));
+      // 3. Angles de vue 3D du plat (Dessus "mill fo9" / Côté "lota" / Gauche / Droite) :
+      // - phi : contrôlé directement par l'inclinaison beta du téléphone :
+      //   * téléphone levé à plat au-dessus du burger (beta ~ 10°..25°) => phi ~ 14° (Vue Dessus "mill fo9" !)
+      //   * téléphone normal face à la table (beta ~ 55°..65°) => phi ~ 58° (Vue 3/4 Table)
+      //   * téléphone bas au bord de la table (beta ~ 75°..85°) => phi ~ 68° (Vue de côté "lota")
+      const clampedBeta = Math.max(10, Math.min(82, event.beta));
+      const phi = Math.max(12, Math.min(68, clampedBeta * 0.92));
 
-      const headingDeg = (Math.atan2(camAxis[0], camAxis[1]) * 180) / Math.PI;
-      let dHeading = headingDeg - anchor.heading0;
-      dHeading = ((dHeading + 540) % 360) - 180;
-      const theta = -dHeading;
+      // - theta : contrôlé par le déplacement angulaire horizontal + l'inclinaison gauche/droite (gamma)
+      const dYaw = ((anchor.stabilizedAlpha - anchor.alpha0 + 540) % 360) - 180;
+      const dGamma = Math.max(-55, Math.min(55, event.gamma - anchor.gamma0));
+      const theta = -dYaw * 1.15 - dGamma * 1.35;
+
+      // - roll : légère compensation d'inclinaison pour que le burger reste parallèle au tapis de la table
+      const roll = Math.round(Math.max(-28, Math.min(28, -dGamma * 0.45)));
 
       setAnchoredView((prev) => {
         const nt = Math.round(theta);
         const np = Math.round(phi);
-        return prev.theta === nt && prev.phi === np ? prev : { theta: nt, phi: np };
+        return prev.theta === nt && prev.phi === np && prev.roll === roll
+          ? prev
+          : { theta: nt, phi: np, roll };
       });
     };
 
@@ -494,10 +532,10 @@ export function ARModal({
       return;
     }
 
-    // Fixe le plat : on mémorise sa direction 3D dans le repère du monde
-    const R = rotationRef.current;
+    // Fixe le plat : on mémorise sa direction 3D dans le repère horizontal de la table
+    const euler = rawEulerRef.current;
     const viewport = viewportRef.current;
-    if (R && hasSensorRef.current && viewport) {
+    if (euler && hasSensorRef.current && viewport) {
       const video = videoRef.current;
       const cw = viewport.clientWidth || 360;
       const ch = viewport.clientHeight || 520;
@@ -510,13 +548,21 @@ export function ARModal({
       const sy = posRef.current.y;
       const len = Math.hypot(sx / focalPx, sy / focalPx, 1);
       const dCam: Vec3 = [sx / focalPx / len, -sy / focalPx / len, -1 / len];
-      const dWorld = mulVec(R, dCam);
-      const camAxis = mulVec(R, [0, 0, -1]);
-      const heading0 = (Math.atan2(camAxis[0], camAxis[1]) * 180) / Math.PI;
-      const camElev = (Math.asin(Math.max(-1, Math.min(1, -camAxis[2]))) * 180) / Math.PI;
-      anchorRef.current = { dWorld, heading0 };
+      const R0 = rotationFromEuler(euler.alpha, euler.beta, 0);
+      const dWorld = mulVec(R0, dCam);
+
+      anchorRef.current = {
+        dWorld,
+        alpha0: euler.alpha,
+        beta0: euler.beta,
+        gamma0: euler.gamma,
+        stabilizedAlpha: euler.alpha,
+      };
       setSensorAnchored(true);
-      setAnchoredView({ theta: 0, phi: Math.round(Math.max(12, Math.min(85, 90 - camElev))) });
+      const initialPhi = Math.round(
+        Math.max(12, Math.min(68, Math.max(10, Math.min(82, euler.beta)) * 0.92))
+      );
+      setAnchoredView({ theta: 0, phi: initialPhi, roll: 0 });
     } else {
       // Pas de capteur (PC) : le plat reste simplement verrouillé à l'écran
       anchorRef.current = null;
@@ -554,9 +600,10 @@ export function ARModal({
   // Angle vertical final combinant l'angle choisi et l'inclinaison du téléphone ("mill fo9")
   const hasAnchor = isPinned && sensorAnchored;
   const effectivePhi = hasAnchor
-    ? Math.max(12, Math.min(85, anchoredView.phi + (basePhi - 66)))
-    : Math.max(12, Math.min(82, basePhi + (isPinned ? 0 : gyroPhiDelta)));
+    ? Math.max(12, Math.min(68, anchoredView.phi + (basePhi - 66)))
+    : Math.max(12, Math.min(68, basePhi + (isPinned ? 0 : gyroPhiDelta)));
   const effectiveTheta = hasAnchor ? orbitTheta + anchoredView.theta : orbitTheta;
+  const effectiveRoll = hasAnchor ? anchoredView.roll : 0;
   // Taille physique actuelle affichée en cm (proportionnelle à la taille officielle 1:1)
   const currentDisplayedCm = Math.max(
     4,
@@ -673,7 +720,7 @@ export function ARModal({
             className="w-full h-full flex items-center justify-center"
             style={{
               transform: isCameraActive
-                ? `translate3d(${pos.x}px, ${pos.y}px, 0px) scale(${scale})`
+                ? `translate3d(${pos.x}px, ${pos.y}px, 0px) scale(${scale}) rotate(${effectiveRoll}deg)`
                 : "none",
               transition: isDragging.current ? "none" : "transform 0.05s linear",
               willChange: "transform",
