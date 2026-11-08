@@ -282,32 +282,45 @@ export function ARModal({
       const coverScale = Math.max(cw / vw, ch / vh);
       const focalPx = (Math.max(vw, vh) / 2 / Math.tan((32 * Math.PI) / 180)) * coverScale;
 
-      // 1. Stabilisation du cap horizontal (alpha) :
-      // Quand on lève le téléphone à plat au-dessus du plat (beta < 35° pour voir "mill fo9")
-      // ou qu'on penche fort le poignet sur le côté (|gamma| > 25° pour voir gauche/droite),
-      // on fige progressivement alpha pour empêcher tout saut de boussole (Gimbal Lock).
-      const absGamma = Math.abs(event.gamma);
-      const pitchWeight = Math.max(0, Math.min(1, (event.beta - 26) / 22));
-      const rollWeight = Math.max(0, Math.min(1, (38 - absGamma) / 20));
-      const alphaTrust = pitchWeight * rollWeight;
+      // 1. Calcul du cap horizontal vrai de l'axe optique de la caméra (compensé du roulis gamma) :
+      // En utilisant la matrice complète R(alpha, beta, gamma), le couplage d'Euler entre alpha et gamma
+      // s'annule naturellement sur l'axe de visée de la caméra.
+      const camAxis = mulVec(R, [0, 0, -1]);
+      const anchorCamAxis = mulVec(
+        rotationFromEuler(anchor.alpha0, anchor.beta0, anchor.gamma0),
+        [0, 0, -1]
+      );
+      const currHeading = (Math.atan2(camAxis[0], camAxis[1]) * 180) / Math.PI;
+      const initHeading = (Math.atan2(anchorCamAxis[0], anchorCamAxis[1]) * 180) / Math.PI;
+      const rawDYaw = ((currHeading - initHeading + 540) % 360) - 180;
 
-      let deltaAlphaStep = ((event.alpha - anchor.stabilizedAlpha + 540) % 360) - 180;
-      // Ignore les sauts brusques parasites de boussole quand le téléphone est incliné
-      if (Math.abs(deltaAlphaStep) > 45 && alphaTrust < 0.5) {
-        deltaAlphaStep = 0;
+      const dGamma = Math.max(-55, Math.min(55, event.gamma - anchor.gamma0));
+      const absDGamma = Math.abs(dGamma);
+
+      // Si on lève le téléphone au-dessus ("mill fo9", beta < 38°) ou qu'on penche le téléphone
+      // sur le côté ("gauche / droit", |dGamma| > 12°), on regarde toujours le plat sur la table :
+      const isInspectingFromAboveOrSide = event.beta < 38 || absDGamma > 12;
+      const effectiveDYaw = isInspectingFromAboveOrSide ? 0 : rawDYaw;
+
+      // 2. Verrouillage Spatial X & Y sur le tapis ("Zone Table ±34°") :
+      // - Tant que la caméra regarde la zone de la table (|effectiveDYaw| <= 34° et beta <= 80°),
+      //   le plat reste 100% VERROUILLÉ à sa place exacte (X = pos0.x, Y = pos0.y) sans jamais
+      //   glisser sur la tasse blanche (à droite) ni sur le PC portable (à gauche) !
+      // - Si l'utilisateur tourne franchement la caméra ailleurs dans la pièce (|effectiveDYaw| > 34°
+      //   ou lève vers le plafond beta > 80°), le plat sort de l'écran et revient exactement
+      //   à sa place dès qu'on regarde à nouveau la table.
+      const YAW_LOCK_DEG = 34;
+      let tableAlphaOffset = 0;
+      if (Math.abs(effectiveDYaw) > YAW_LOCK_DEG) {
+        const excessYaw =
+          Math.sign(effectiveDYaw) * (Math.abs(effectiveDYaw) - YAW_LOCK_DEG) * 1.35;
+        tableAlphaOffset = excessYaw;
       }
-      anchor.stabilizedAlpha =
-        (anchor.stabilizedAlpha + deltaAlphaStep * alphaTrust + 360) % 360;
 
-      // 2. Matrice d'ancrage sur la table (R_table) :
-      // - Suit la rotation horizontale (stabilizedAlpha) quand on tourne vers le PC portable ou la fenêtre.
-      // - Garde l'élévation verrouillée sur la table quand on lève le téléphone ("mill fo9", beta <= 78°)
-      //   pour que le burger NE MONTE JAMAIS dans les airs au-dessus de la vape/poêle !
-      // - Ignore le roulis du poignet (gamma = 0) pour que le burger NE DISPARAISSE JAMAIS
-      //   quand on incline le téléphone à gauche ou à droite (00:32 - 00:37).
+      const effectiveAlphaForTable = (anchor.alpha0 + tableAlphaOffset + 360) % 360;
       const effectiveBetaForTable =
         event.beta > 80 ? anchor.beta0 + (event.beta - 80) * 0.85 : anchor.beta0;
-      const R_table = rotationFromEuler(anchor.stabilizedAlpha, effectiveBetaForTable, 0);
+      const R_table = rotationFromEuler(effectiveAlphaForTable, effectiveBetaForTable, 0);
 
       const dCam = mulVecT(R_table, anchor.dWorld);
       const inFront = dCam[2] < -0.12;
@@ -318,12 +331,11 @@ export function ARModal({
         const tx = Math.max(-2500, Math.min(2500, rawX));
         const ty = Math.max(-2500, Math.min(2500, rawY));
         const prev = posRef.current;
-        const nx = prev.x + (tx - prev.x) * 0.55;
-        const ny = prev.y + (ty - prev.y) * 0.55;
+        const nx = prev.x + (tx - prev.x) * 0.6;
+        const ny = prev.y + (ty - prev.y) * 0.6;
         if (Math.abs(nx - prev.x) > 0.4 || Math.abs(ny - prev.y) > 0.4) {
           updatePos({ x: Math.round(nx), y: Math.round(ny) });
         }
-        // Le plat reste visible tant qu'il n'est pas complètement sorti du cadre (pas de disparition brusque)
         const onScreen = Math.abs(tx) < cw * 1.15 && Math.abs(ty) < ch * 1.15;
         setDishVisible((v) => (v === onScreen ? v : onScreen));
       } else {
@@ -338,13 +350,13 @@ export function ARModal({
       const clampedBeta = Math.max(10, Math.min(82, event.beta));
       const phi = Math.max(12, Math.min(68, clampedBeta * 0.92));
 
-      // - theta : contrôlé par le déplacement angulaire horizontal + l'inclinaison gauche/droite (gamma)
-      const dYaw = ((anchor.stabilizedAlpha - anchor.alpha0 + 540) % 360) - 180;
-      const dGamma = Math.max(-55, Math.min(55, event.gamma - anchor.gamma0));
-      const theta = -dYaw * 1.15 - dGamma * 1.35;
+      // - theta : quand on penche à gauche ou à droite (dGamma / rawDYaw), le burger tourne en 3D
+      //   sur place pour montrer son côté gauche et son côté droit sans bouger du tapis !
+      const orbitYaw = Math.max(-45, Math.min(45, rawDYaw));
+      const theta = -orbitYaw * 0.85 - dGamma * 1.45;
 
-      // - roll : légère compensation d'inclinaison pour que le burger reste parallèle au tapis de la table
-      const roll = Math.round(Math.max(-28, Math.min(28, -dGamma * 0.45)));
+      // - roll : légère compensation d'inclinaison pour que le burger reste parallèle au tapis
+      const roll = Math.round(Math.max(-25, Math.min(25, -dGamma * 0.4)));
 
       setAnchoredView((prev) => {
         const nt = Math.round(theta);
