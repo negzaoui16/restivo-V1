@@ -297,29 +297,39 @@ export function ARModal({
       const dGamma = Math.max(-55, Math.min(55, event.gamma - anchor.gamma0));
       const absDGamma = Math.abs(dGamma);
 
-      // Si on lève le téléphone au-dessus ("mill fo9", beta < 38°) ou qu'on penche le téléphone
-      // sur le côté ("gauche / droit", |dGamma| > 12°), on regarde toujours le plat sur la table :
-      const isInspectingFromAboveOrSide = event.beta < 38 || absDGamma > 12;
+      // Si on lève le téléphone à plat au-dessus ("mill fo9", beta < 36° et |dGamma| < 18°)
+      // ou qu'on penche le téléphone sur le côté ("gauche / droit", |dGamma| > 13°),
+      // on inspecte le plat sur la table :
+      const isInspectingFromAboveOrSide =
+        (event.beta < 36 && absDGamma < 18) || absDGamma > 13;
       const effectiveDYaw = isInspectingFromAboveOrSide ? 0 : rawDYaw;
 
-      // 2. Verrouillage Spatial X & Y sur le tapis ("Zone Table ±34°") :
-      // - Tant que la caméra regarde la zone de la table (|effectiveDYaw| <= 34° et beta <= 80°),
-      //   le plat reste 100% VERROUILLÉ à sa place exacte (X = pos0.x, Y = pos0.y) sans jamais
-      //   glisser sur la tasse blanche (à droite) ni sur le PC portable (à gauche) !
-      // - Si l'utilisateur tourne franchement la caméra ailleurs dans la pièce (|effectiveDYaw| > 34°
-      //   ou lève vers le plafond beta > 80°), le plat sort de l'écran et revient exactement
-      //   à sa place dès qu'on regarde à nouveau la table.
-      const YAW_LOCK_DEG = 34;
+      // 2. Verrouillage Spatial X & Y sur le tapis + Sortie Caméra quand on lève/tourne le téléphone :
+      // - Horizontalement (X) : verrouillé sur le tapis dans un cône de ±24° autour du plat.
+      //   Au-delà de ±24° (ex: on tourne vers le fauteuil ou le PC à gauche/droite), le plat
+      //   sort de l'écran et revient exactement à sa place dès qu'on revient vers la table.
+      // - Verticalement (Y) :
+      //   * Si on baisse/incline le téléphone vers le plat pour le voir du dessus ("mill fo9",
+      //     beta <= beta0 + 7°), Y reste 100% fixé sur le tapis.
+      //   * Dès qu'on LÈVE le téléphone vers l'avant (vers l'écran du PC, le canapé ou le mur,
+      //     "w9ta nhiz telephone", beta > beta0 + 7°), le plat descend avec la table et SORT
+      //     par le bas de la caméra, puis réapparaît sur la table dès qu'on rebaisse le téléphone !
+      const YAW_LOCK_DEG = 24;
       let tableAlphaOffset = 0;
       if (Math.abs(effectiveDYaw) > YAW_LOCK_DEG) {
         const excessYaw =
-          Math.sign(effectiveDYaw) * (Math.abs(effectiveDYaw) - YAW_LOCK_DEG) * 1.35;
+          Math.sign(effectiveDYaw) * (Math.abs(effectiveDYaw) - YAW_LOCK_DEG) * 1.45;
         tableAlphaOffset = excessYaw;
       }
 
+      const PITCH_UP_THRESHOLD = anchor.beta0 + 7;
+      const isLiftingPhoneAwayFromTable =
+        event.beta > PITCH_UP_THRESHOLD && absDGamma < 22;
+      const effectiveBetaForTable = isLiftingPhoneAwayFromTable
+        ? anchor.beta0 + (event.beta - PITCH_UP_THRESHOLD) * 1.75
+        : anchor.beta0;
+
       const effectiveAlphaForTable = (anchor.alpha0 + tableAlphaOffset + 360) % 360;
-      const effectiveBetaForTable =
-        event.beta > 80 ? anchor.beta0 + (event.beta - 80) * 0.85 : anchor.beta0;
       const R_table = rotationFromEuler(effectiveAlphaForTable, effectiveBetaForTable, 0);
 
       const dCam = mulVecT(R_table, anchor.dWorld);
@@ -331,31 +341,30 @@ export function ARModal({
         const tx = Math.max(-2500, Math.min(2500, rawX));
         const ty = Math.max(-2500, Math.min(2500, rawY));
         const prev = posRef.current;
-        const nx = prev.x + (tx - prev.x) * 0.6;
-        const ny = prev.y + (ty - prev.y) * 0.6;
+        const nx = prev.x + (tx - prev.x) * 0.62;
+        const ny = prev.y + (ty - prev.y) * 0.62;
         if (Math.abs(nx - prev.x) > 0.4 || Math.abs(ny - prev.y) > 0.4) {
           updatePos({ x: Math.round(nx), y: Math.round(ny) });
         }
-        const onScreen = Math.abs(tx) < cw * 1.15 && Math.abs(ty) < ch * 1.15;
+        const onScreen = Math.abs(tx) < cw * 0.95 && Math.abs(ty) < ch * 0.92;
         setDishVisible((v) => (v === onScreen ? v : onScreen));
       } else {
         setDishVisible((v) => (v ? false : v));
       }
 
       // 3. Angles de vue 3D du plat (Dessus "mill fo9" / Côté "lota" / Gauche / Droite) :
-      // - phi : contrôlé directement par l'inclinaison beta du téléphone :
-      //   * téléphone levé à plat au-dessus du burger (beta ~ 10°..25°) => phi ~ 14° (Vue Dessus "mill fo9" !)
-      //   * téléphone normal face à la table (beta ~ 55°..65°) => phi ~ 58° (Vue 3/4 Table)
-      //   * téléphone bas au bord de la table (beta ~ 75°..85°) => phi ~ 68° (Vue de côté "lota")
-      const clampedBeta = Math.max(10, Math.min(82, event.beta));
+      // - phi : compensé du roulis (absDGamma) pour que pencher le téléphone à gauche/droite
+      //   (00:43 - 00:47) n'active JAMAIS "Vue Dessus" par erreur !
+      const rollCompensatedBeta = Math.hypot(event.beta, absDGamma * 0.85);
+      const clampedBeta = Math.max(10, Math.min(82, rollCompensatedBeta));
       const phi = Math.max(12, Math.min(68, clampedBeta * 0.92));
 
-      // - theta : quand on penche à gauche ou à droite (dGamma / rawDYaw), le burger tourne en 3D
+      // - theta : quand on penche à gauche ou à droite (dGamma / rawDYaw), le plat tourne en 3D
       //   sur place pour montrer son côté gauche et son côté droit sans bouger du tapis !
       const orbitYaw = Math.max(-45, Math.min(45, rawDYaw));
-      const theta = -orbitYaw * 0.85 - dGamma * 1.45;
+      const theta = -orbitYaw * 0.95 - dGamma * 1.55;
 
-      // - roll : légère compensation d'inclinaison pour que le burger reste parallèle au tapis
+      // - roll : légère compensation d'inclinaison pour que le plat reste parallèle au tapis
       const roll = Math.round(Math.max(-25, Math.min(25, -dGamma * 0.4)));
 
       setAnchoredView((prev) => {

@@ -255,8 +255,8 @@ export function MenuPreview({
           <article
             className={
               isClientView
-                ? "bg-[#FAF7F2]/95 backdrop-blur-md border border-[#E8E2D7] rounded-2xl sm:rounded-[28px] px-4 sm:px-8 lg:px-10 py-6 sm:py-10 shadow-[0_20px_60px_-20px_rgba(50,36,24,0.25)] transition-all"
-                : `bg-[#FAF7F2]/90 backdrop-blur-[3px] border shadow-[0_24px_80px_-32px_rgba(50,36,24,0.35)] transition-all ${
+                ? "bg-[#FAF7F2] border border-[#E8E2D7] rounded-2xl sm:rounded-[28px] px-4 sm:px-8 lg:px-10 py-6 sm:py-10 shadow-[0_20px_60px_-20px_rgba(50,36,24,0.25)] transition-all"
+                : `bg-[#FAF7F2] border shadow-[0_24px_80px_-32px_rgba(50,36,24,0.35)] transition-all ${
                     deviceMode === "mobile"
                       ? "rounded-[44px] border-[#333] ring-12 ring-[#1F1F1F] px-4 sm:px-6 py-8 shadow-2xl"
                       : "rounded-[28px] border-[#E8E2D7]/80 px-5 sm:px-10 py-10 sm:py-12"

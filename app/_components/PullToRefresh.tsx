@@ -42,23 +42,25 @@ export function PullToRefresh({
   const startY = useRef(0);
   const isPulling = useRef(false);
 
-  // Vérifie si le scroll est tout en haut
+  // Vérifie si le scroll est strictement tout en haut (y compris tous les parents scrollables)
   const isScrolledToTop = useCallback(() => {
     if (typeof window === "undefined") return true;
+    if (window.scrollY > 2) return false;
 
-    // Vérifie le scroll du container ou du body/window
-    const element = containerRef.current;
-    if (element) {
-      if (element.scrollTop > 0) return false;
-      const scrollParent = element.closest(".overflow-y-auto, .overflow-auto");
-      if (scrollParent && scrollParent.scrollTop > 0) return false;
+    let el: HTMLElement | null = containerRef.current;
+    while (el && el !== document.body) {
+      if (el.scrollTop > 2) return false;
+      el = el.parentElement;
     }
 
-    return window.scrollY <= 0;
+    return true;
   }, []);
 
   const handleTouchStart = (e: React.TouchEvent | React.MouseEvent) => {
-    if (disabled || isRefreshing || !isScrolledToTop()) return;
+    if (disabled || isRefreshing || !isScrolledToTop()) {
+      isPulling.current = false;
+      return;
+    }
 
     const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
     startY.current = clientY;
@@ -68,12 +70,18 @@ export function PullToRefresh({
   const handleTouchMove = (e: React.TouchEvent | React.MouseEvent) => {
     if (!isPulling.current || disabled || isRefreshing) return;
 
+    if (!isScrolledToTop()) {
+      setPullDistance(0);
+      isPulling.current = false;
+      return;
+    }
+
     const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
     const diff = clientY - startY.current;
 
-    if (diff > 0 && isScrolledToTop()) {
-      // Résistance élastique (logarithmique / damping)
-      const dampedDistance = Math.min(100, Math.pow(diff, 0.85) * 1.5);
+    if (diff > 16) {
+      // Résistance élastique (logarithmique / damping) après une zone morte de 16px
+      const dampedDistance = Math.min(100, Math.pow(diff - 16, 0.85) * 1.45);
       setPullDistance(dampedDistance);
 
       // Vibration haptique quand on franchit le seuil
@@ -84,7 +92,7 @@ export function PullToRefresh({
           } catch {}
         }
       }
-    } else {
+    } else if (diff < -5) {
       setPullDistance(0);
       isPulling.current = false;
     }
@@ -163,15 +171,8 @@ export function PullToRefresh({
         </div>
       </div>
 
-      {/* Contenu enfant avec légère translation élastique */}
-      <div
-        style={{
-          transform: isPulling.current && pullDistance > 0 ? `translate3d(0, ${pullDistance * 0.35}px, 0)` : "none",
-          transition: isPulling.current ? "none" : "transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
-        }}
-      >
-        {children}
-      </div>
+      {/* Contenu enfant (sans transform CSS pour ne jamais perturber le scroll GPU ou les éléments sticky) */}
+      <div>{children}</div>
     </div>
   );
 }
